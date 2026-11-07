@@ -1,6 +1,6 @@
 import asyncio
+import json
 import logging
-import os
 
 from psycopg.rows import dict_row
 from psycopg_pool import ConnectionPool
@@ -8,68 +8,28 @@ from psycopg_pool import ConnectionPool
 from database.base_database import (
     AgentStateRecord,
     BaseDatabase,
+    VersionStateRecord,
+)
+from database.enum_database import (
+    ADD_AGENT_STATE_ID_SQL,
+    CONNECT_TIMEOUT_SECONDS,
+    CREATE_AGENT_STATE_ID_INDEX_SQL,
+    CREATE_STATUS_INDEX_SQL,
+    CREATE_TABLE_SQL,
+    CREATE_THREAD_INDEX_SQL,
+    CREATE_VERSION_AGENT_STATE_INDEX_SQL,
+    CREATE_VERSION_RUN_INDEX_SQL,
+    CREATE_VERSION_STATES_TABLE_SQL,
+    MAX_ERROR_LENGTH,
+)
+from database.utils_database import (
+    _to_record,
+    _to_version_record,
+    get_database_url,
 )
 from enums import AgentStatus
 
 logger = logging.getLogger(__name__)
-
-MAX_ERROR_LENGTH = 2000
-CONNECT_TIMEOUT_SECONDS = 5
-
-CREATE_TABLE_SQL = """
-CREATE TABLE IF NOT EXISTS agent_states (
-    run_id TEXT NOT NULL,
-    thread_id TEXT NOT NULL,
-    agent_name TEXT NOT NULL,
-    status TEXT NOT NULL,
-    output TEXT NOT NULL DEFAULT '',
-    error TEXT NOT NULL DEFAULT '',
-    attempts INTEGER NOT NULL DEFAULT 0,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    PRIMARY KEY (run_id, agent_name)
-)
-"""
-
-CREATE_THREAD_INDEX_SQL = """
-CREATE INDEX IF NOT EXISTS agent_states_thread_idx
-ON agent_states (thread_id)
-"""
-
-CREATE_STATUS_INDEX_SQL = """
-CREATE INDEX IF NOT EXISTS agent_states_status_idx
-ON agent_states (status)
-"""
-
-
-def get_database_url() -> str:
-    """Read and normalise the PostgreSQL connection URL."""
-
-    database_url = os.getenv("DATABASE_URL")
-
-    if not database_url:
-        raise ValueError(
-            "DATABASE_URL is missing. Please add your Render PostgreSQL External Database URL to .env"
-        )
-
-    if "sslmode=" not in database_url:
-        separator = "&" if "?" in database_url else "?"
-        database_url = f"{database_url}{separator}sslmode=require"
-
-    return database_url
-
-
-def _to_record(row: dict) -> AgentStateRecord:
-    return AgentStateRecord(
-        run_id=row["run_id"],
-        thread_id=row["thread_id"],
-        agent_name=row["agent_name"],
-        status=row["status"],
-        output=row["output"] or "",
-        error=row["error"] or "",
-        attempts=row["attempts"],
-        updated_at=row["updated_at"],
-    )
 
 
 class PostgresDatabase(BaseDatabase):
@@ -149,7 +109,7 @@ class PostgresDatabase(BaseDatabase):
         rows = await asyncio.to_thread(
             self._fetch_all_sync,
             """
-            SELECT run_id, thread_id, agent_name, status, output, error,
+            SELECT id, run_id, thread_id, agent_name, status, output, error,
                    attempts, updated_at
             FROM agent_states
             WHERE run_id = %s AND agent_name = %s
@@ -163,7 +123,7 @@ class PostgresDatabase(BaseDatabase):
         rows = await asyncio.to_thread(
             self._fetch_all_sync,
             """
-            SELECT run_id, thread_id, agent_name, status, output, error,
+            SELECT id, run_id, thread_id, agent_name, status, output, error,
                    attempts, updated_at
             FROM agent_states
             WHERE run_id = %s
@@ -179,7 +139,7 @@ class PostgresDatabase(BaseDatabase):
         rows = await asyncio.to_thread(
             self._fetch_all_sync,
             """
-            SELECT run_id, thread_id, agent_name, status, output, error,
+            SELECT id, run_id, thread_id, agent_name, status, output, error,
                    attempts, updated_at
             FROM agent_states
             WHERE status <> %s
@@ -190,6 +150,58 @@ class PostgresDatabase(BaseDatabase):
         )
 
         return [_to_record(row) for row in rows]
+
+    async def save_version_state(
+        self,
+        run_id: str,
+        agent_state_id: int,
+        version: int,
+        shared_memory: dict,
+    ) -> VersionStateRecord:
+        rows = await asyncio.to_thread(
+            self._fetch_all_sync,
+            """
+            INSERT INTO version_states (run_id, agent_state_id, version, shared_memory)
+            VALUES (%s, %s, %s, %s::jsonb)
+            ON CONFLICT (run_id, version) DO UPDATE
+            SET agent_state_id = EXCLUDED.agent_state_id,
+                shared_memory = EXCLUDED.shared_memory,
+                updated_at = NOW()
+            RETURNING id, run_id, agent_state_id, version, shared_memory,
+                      created_at, updated_at
+            """,
+            (run_id, agent_state_id, version, json.dumps(shared_memory)),
+        )
+        return _to_version_record(rows[0])
+
+    async def get_latest_version_state(self, run_id: str) -> VersionStateRecord | None:
+        rows = await asyncio.to_thread(
+            self._fetch_all_sync,
+            """
+            SELECT id, run_id, agent_state_id, version, shared_memory,
+                   created_at, updated_at
+            FROM version_states
+            WHERE run_id = %s
+            ORDER BY version DESC, id DESC
+            LIMIT 1
+            """,
+            (run_id,),
+        )
+        return _to_version_record(rows[0]) if rows else None
+
+    async def get_version_states(self, run_id: str) -> list[VersionStateRecord]:
+        rows = await asyncio.to_thread(
+            self._fetch_all_sync,
+            """
+            SELECT id, run_id, agent_state_id, version, shared_memory,
+                   created_at, updated_at
+            FROM version_states
+            WHERE run_id = %s
+            ORDER BY version ASC, id ASC
+            """,
+            (run_id,),
+        )
+        return [_to_version_record(row) for row in rows]
 
     def _connect_sync(self) -> None:
         pool = ConnectionPool(
@@ -213,6 +225,13 @@ class PostgresDatabase(BaseDatabase):
         self._execute_sync(CREATE_TABLE_SQL)
         self._execute_sync(CREATE_THREAD_INDEX_SQL)
         self._execute_sync(CREATE_STATUS_INDEX_SQL)
+        # version_states references agent_states(id), so the
+        # surrogate id must exist before that table is created.
+        self._execute_sync(ADD_AGENT_STATE_ID_SQL)
+        self._execute_sync(CREATE_AGENT_STATE_ID_INDEX_SQL)
+        self._execute_sync(CREATE_VERSION_STATES_TABLE_SQL)
+        self._execute_sync(CREATE_VERSION_RUN_INDEX_SQL)
+        self._execute_sync(CREATE_VERSION_AGENT_STATE_INDEX_SQL)
 
     def _execute_sync(self, sql: str, params: tuple | None = None) -> None:
         pool = self._require_pool()

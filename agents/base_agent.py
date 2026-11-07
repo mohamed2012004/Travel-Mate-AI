@@ -1,40 +1,24 @@
 import logging
+import time
 from abc import ABC, abstractmethod
 from collections.abc import Mapping, Sequence
 from typing import Any
 
 from langchain.agents import create_agent
 from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import AIMessage, AnyMessage, HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.tools import BaseTool
 
+from agents.utils_agents import message_text
+from utils.background_tasks import schedule
 from database import AgentStateRecord, BaseDatabase
 from enums import StateKey
+from tools.mcp_tools import mcp_tools
 
 logger = logging.getLogger(__name__)
 
 # The workflow state is a plain dict, so agents stay independent of backend.py.
 AgentState = Mapping[str, Any]
-
-
-def message_text(message: AnyMessage) -> str:
-    """Flatten a message's content into plain text."""
-
-    content = getattr(message, "content", message)
-
-    if isinstance(content, str):
-        return content
-
-    if isinstance(content, list):
-        parts = []
-        for block in content:
-            if isinstance(block, str):
-                parts.append(block)
-            elif isinstance(block, dict) and block.get("type") == "text":
-                parts.append(block.get("text", ""))
-        return "\n".join(part for part in parts if part)
-
-    return str(content)
 
 
 class BaseAgent(ABC):
@@ -47,11 +31,12 @@ class BaseAgent(ABC):
     """
 
     name: str = "agent"
+    mcp_server: str | None = None
+    mcp_tool_names: tuple[str, ...] | None = None
 
     def __init__(self, model: BaseChatModel, database: BaseDatabase | None = None):
         self.model = model
         self.database = database
-        self._graph = None
 
     @property
     @abstractmethod
@@ -61,14 +46,6 @@ class BaseAgent(ABC):
     @abstractmethod
     def build_prompt(self, state: AgentState) -> str:
         """Build this agent's input from the shared workflow state."""
-
-    async def load_tools(self) -> Sequence[BaseTool]:
-        """MCP tools this agent is allowed to use.
-
-        Override in agents that need external data. Returns no tools by default.
-        """
-
-        return []
 
     async def run(self, state: AgentState) -> tuple[str, int]:
         """Run the agent on the workflow state.
@@ -87,20 +64,42 @@ class BaseAgent(ABC):
             )
             return saved.output, 0
 
-        await self._begin(run_id, thread_id)
+        self._begin(run_id, thread_id)
+        logger.info("[%s] START run=%s", self.name, run_id)
+        started = time.perf_counter()
 
         try:
-            answer, llm_calls = await self._invoke(state)
+            answer, llm_calls = await self._invoke_with_mcp(state)
         except Exception as error:
-            await self._fail(run_id, str(error))
+            logger.error("[%s] FAILED run=%s elapsed=%.1fs error=%s", self.name, run_id, time.perf_counter() - started, error)
+            self._fail(run_id, str(error))
             raise
 
-        await self._complete(run_id, answer)
+        self._complete(run_id, answer)
+        logger.info(
+            "[%s] DONE run=%s elapsed=%.1fs llm_calls=%s chars=%d -> result returned, DB save queued in background",
+            self.name, run_id, time.perf_counter() - started, llm_calls, len(answer),
+        )
 
         return answer, llm_calls
 
-    async def _invoke(self, state: AgentState) -> tuple[str, int]:
-        graph = await self._compiled()
+    async def _invoke_with_mcp(self, state: AgentState) -> tuple[str, int]:
+        if not self.mcp_server:
+            return await self._invoke(state, tools=[])
+
+        async with mcp_tools(self.mcp_server) as tools:
+            if self.mcp_tool_names:
+                tools = [t for t in tools if t.name in self.mcp_tool_names]
+            logger.info("[%s] create_agent(tools=%s)", self.name, [t.name for t in tools])
+            return await self._invoke(state, tools=tools)
+
+    async def _invoke(self, state: AgentState, tools: Sequence[BaseTool]) -> tuple[str, int]:
+        graph = create_agent(
+            model=self.model,
+            tools=list(tools),
+            system_prompt=self.system_prompt,
+            name=self.name,
+        )
 
         result = await graph.ainvoke(
             {StateKey.MESSAGES: [HumanMessage(content=self.build_prompt(state))]}
@@ -111,17 +110,6 @@ class BaseAgent(ABC):
         return message_text(messages[-1]), sum(
             1 for message in messages if isinstance(message, AIMessage)
         )
-
-    async def _compiled(self):
-        if self._graph is None:
-            self._graph = create_agent(
-                model=self.model,
-                tools=await self.load_tools(),
-                system_prompt=self.system_prompt,
-                name=self.name
-            )
-
-        return self._graph
 
     @property
     def _persistence_enabled(self) -> bool:
@@ -139,28 +127,34 @@ class BaseAgent(ABC):
 
         return record if record is not None and record.is_completed else None
 
-    async def _begin(self, run_id: str, thread_id: str) -> None:
+    def _begin(self, run_id: str, thread_id: str) -> None:
         if not run_id or not self._persistence_enabled:
             return
+        schedule(f"{run_id}:{self.name}", lambda: self._save_start(run_id, thread_id))
 
+    async def _save_start(self, run_id: str, thread_id: str) -> None:
         try:
             await self.database.start_agent(run_id, thread_id, self.name)
         except Exception as error:
             logger.warning("[%s] could not record start: %s", self.name, error)
 
-    async def _complete(self, run_id: str, output: str) -> None:
+    def _complete(self, run_id: str, output: str) -> None:
         if not run_id or not self._persistence_enabled:
             return
+        schedule(f"{run_id}:{self.name}", lambda: self._save_complete(run_id, output))
 
+    async def _save_complete(self, run_id: str, output: str) -> None:
         try:
             await self.database.finish_agent(run_id, self.name, output)
         except Exception as error:
             logger.warning("[%s] could not save output: %s", self.name, error)
 
-    async def _fail(self, run_id: str, error: str) -> None:
+    def _fail(self, run_id: str, error: str) -> None:
         if not run_id or not self._persistence_enabled:
             return
+        schedule(f"{run_id}:{self.name}", lambda: self._save_fail(run_id, error))
 
+    async def _save_fail(self, run_id: str, error: str) -> None:
         try:
             await self.database.fail_agent(run_id, self.name, error)
         except Exception as db_error:

@@ -1,4 +1,4 @@
-# ✈️ TripMate AI — A Multi-Agent Travel Planner with MCP
+# ✈️ TravelMate AI — A Multi-Agent Travel Planner with MCP
 
 An open-source AI travel planner that turns a natural-language trip request into a practical travel plan with flight suggestions, hotel ideas, weather details, and a day-by-day itinerary. The project uses a multi-agent workflow built with LangGraph, LangChain, FastAPI, and MCP tooling.
 
@@ -16,7 +16,7 @@ all coordinated through a LangGraph workflow with MCP-based tool integrations.
 
 ## Features
 
-- ✈️ Flight research using AviationStack
+- ✈️ Flight research using Tavily search
 - 🏨 Hotel suggestions using Tavily search
 - 🌤 Weather lookup via a custom MCP tool
 - 🧠 Multi-agent orchestration with LangGraph and MCP
@@ -35,29 +35,109 @@ all coordinated through a LangGraph workflow with MCP-based tool integrations.
 - Groq LLMs
 - PostgreSQL
 - Tavily API
-- AviationStack API
+- WeatherAPI
 - MCP via `langchain-mcp-adapters` and `mcp`
+
+## System Design
+
+Source design: [`excalidraw_files/design.excalidraw`](excalidraw_files/design.excalidraw) — *TravelMate AI - LangGraph Multi-Agent Travel Planner*.
+
+```mermaid
+flowchart LR
+    Client["Client"] --> Guard["Rate Limiter / Auth / Route Guard"]
+    Guard --> API["POST /api/travel<br/>router/router.py"]
+    API --> Supervisor["Supervisor / Intent Router<br/>agents/intent_router.py"]
+
+    Supervisor --> Hotel["Hotel Agent"]
+    Supervisor --> Flight["Flight Agent"]
+    Supervisor --> Weather["Weather Agent"]
+
+    Hotel --> Lock["Optimistic Locking<br/>SharedMemory.update_with_retry()"]
+    Flight --> Lock
+    Weather --> Lock
+    Lock --> Shared["Shared Memory<br/>state/shared_memory.py"]
+    Shared --> Episodic["Episodic Memory<br/>PostgreSQL: agent_states, version_states"]
+
+    Hotel --> Summarize["Summarize Agent<br/>Itinerary + Final Agent"]
+    Flight --> Summarize
+    Weather --> Summarize
+    Summarize --> Fidelity["Instruction Fidelity<br/>summary covers only requested intent"]
+    Fidelity -. feedback .-> Supervisor
+```
+
+How to read it:
+
+| Design element | Implementation |
+| --- | --- |
+| Client → Guard → `POST /travel` | Browser UI (`templates/`, `static/`) → FastAPI app (`app.py`) → router (`router/router.py`) |
+| Supervisor | `IntentRouter` (`agents/intent_router.py`) + `Nodes.route_intent()` — classifies intent and selects only needed agents |
+| Hotel / Flight / Weather Agents | `HotelAgent`, `FlightAgent`, `WeatherAgent` (`agents/`) — run in parallel via LangGraph fan-out |
+| Optimistic Locking | `SharedMemory.update_with_retry()` (`state/shared_memory.py`, used in `nodes/nodes.py:_commit`) — stale parallel writes are rejected and retried against the latest version instead of overwriting each other |
+| Shared Memory | In-memory `SharedMemory` per `run_id` (`{version, hotel, flight, weather}`), persisted as snapshots |
+| Episodic Memory | PostgreSQL (`database/postgres_database.py`) — `agent_states` + `version_states`; crashed runs replay completed agents by `run_id` |
+| Summarize Agent | `ItineraryAgent` → `FinalAgent` (`agents/`) — builds the itinerary, then the final answer |
+| Instruction Fidelity | `FinalAgent` receives the detected intent and writes a summary covering only the requested topics |
+
+## Agent Architecture
+
+```mermaid
+flowchart TD
+    START([START]) --> Router["Intent Router<br/>route_intent()"]
+    Router -->|selected research agents, parallel| Flight["Flight Agent<br/>tavily_search via Tavily MCP"]
+    Router --> Hotel["Hotel Agent<br/>tavily_search via Tavily MCP"]
+    Router --> Weather["Weather Agent<br/>custom weather MCP server"]
+    Router -->|itinerary only| Itinerary["Itinerary Agent<br/>no tools"]
+    Router -->|summary only| Final["Final Agent<br/>no tools"]
+
+    Flight --> After1{"after_research()"}
+    Hotel --> After2{"after_research()"}
+    Weather --> After3{"after_research()"}
+    After1 -->|itinerary requested| Itinerary
+    After2 -->|itinerary requested| Itinerary
+    After3 -->|itinerary requested| Itinerary
+    After1 -->|otherwise| Final
+    After2 -->|otherwise| Final
+    After3 -->|otherwise| Final
+
+    Itinerary --> Final
+    Final --> END([END])
+
+    Flight -.-> SM["SharedMemory<br/>optimistic locking"]
+    Hotel -.-> SM
+    Weather -.-> SM
+    SM -.-> PG[("PostgreSQL<br/>episodic memory")]
+```
+
+Agent responsibilities:
+
+| Agent | File | MCP server / tools | Role |
+| --- | --- | --- | --- |
+| Intent Router | `agents/intent_router.py` | Structured LLM output (no tools) | Classifies intent, selects agents (e.g. hotels-only → only `HotelAgent`; full trip → flight + hotel + weather in parallel) |
+| Flight Agent | `agents/flight_agent.py` | `tavily` — `tavily_search` | Flight research with Tavily web search |
+| Hotel Agent | `agents/hotel_agent.py` | `tavily` — `tavily_search` | Hotel research with Tavily web search |
+| Weather Agent | `agents/weather_agent.py` | `weather` — `get_current_weather`, `get_forecast` | Current weather + forecast via the custom local MCP server |
+| Itinerary Agent | `agents/itinerary_agent.py` | None | Builds a practical day-by-day itinerary from research results |
+| Final Agent | `agents/final_agent.py` | None | Formats the final answer covering only requested topics |
+
+Every agent extends `BaseAgent` (`agents/base_agent.py`): it loads only its own MCP server's tools (`tools/mcp_tools.py:mcp_tools()`), runs `create_agent(...)`, counts LLM calls, and persists `start_agent` / `finish_agent` / `fail_agent` to PostgreSQL so completed agents replay on retry. Graph wiring is in `graph/travel_graph.py` (`build_graph()`), node functions in `nodes/nodes.py` (`Nodes`).
 
 ## State and MCP Integration
 
 This project integrates MCP in several places:
 
 - `Tavily` search uses a remote MCP endpoint at `https://mcp.tavily.com/mcp/`
-- `AviationStack` uses a local stdio MCP command: `uvx aviationstack-mcp`
-- `Weather` is implemented with a custom local MCP server in `custom_weather_mcp_server.py`
+- `Weather` is implemented with a custom local MCP server in `tools/custom_weather_mcp_server.py`
 
-The MCP client is defined in `mcp_client.py`, which exposes one async tool getter per MCP server:
+The MCP client is defined in `tools/mcp_tools.py`, which exposes one persistent-session context manager per MCP server:
 
-- `get_aviation_tools()` — AviationStack airport, airline, route and flight tools
-- `get_tavily_tools()` — Tavily web search tools
-- `get_weather_tools()` — the custom weather MCP server tools
-- `get_all_tools()` — every tool across all servers (handy for debugging)
+- `mcp_tools("tavily")` — Tavily web search tools (flight + hotel agents)
+- `mcp_tools("weather")` — the custom weather MCP server tools (weather agent)
 
-Every graph node in `backend.py` is its own LangChain agent, built with `create_agent`, and each agent only receives the MCP tools of the API it is responsible for. No agent calls an HTTP API directly.
+Every graph node in `router/router.py` / `utils/backend_helpers.py` is its own LangChain agent, built with `create_agent`, and each agent only receives the MCP tools of the API it is responsible for. No agent calls an HTTP API directly.
 
 Each agent lives in its own class under `agents/` and implements the `BaseAgent` interface:
 
-- `FlightAgent`, `HotelAgent`, `WeatherAgent` — declare `load_tools()` to receive their MCP server's tools
+- `FlightAgent`, `HotelAgent`, `WeatherAgent` — declare `mcp_server` / `mcp_tool_names` to receive their MCP server's tools
 - `ItineraryAgent`, `FinalAgent` — planning and writing agents with no tools
 
 A concrete agent only supplies its role prompt, its tools and how the shared state becomes its input; `BaseAgent` handles running the agent, counting its LLM calls, and saving the result.
@@ -76,24 +156,32 @@ Every agent writes its own state to the `agent_states` table:
 
 Each run gets a `run_id`, and agent results are keyed by `(run_id, agent_name)`. To recover a crashed run, call the API again with the same `run_id`: agents that already completed replay their saved answer from the database instead of calling the LLM and tools again, and only the remaining agents run. `/api/travel` returns the `run_id` it used for exactly this purpose.
 
-On startup the app connects to PostgreSQL, creates the table if needed and prints any agent runs that started but never finished (`startup_database()` in `backend.py`). The same information is exposed by `GET /health`. If PostgreSQL is unreachable, the app still starts, logs the problem and runs with in-memory conversation checkpoints.
+On startup the app connects to PostgreSQL, creates the table if needed and prints any agent runs that started but never finished (`startup_database()` in `utils/backend_helpers.py`). The same information is exposed by `GET /health`. If PostgreSQL is unreachable, the app still starts, logs the problem and runs with in-memory conversation checkpoints.
 
 ## Project Structure
 
 ```text
 .
-├── app.py                       # FastAPI app entry point
-├── backend.py                   # LangGraph travel workflow
+├── app.py                       # FastAPI app entry point (lifespan, static, include_router)
+├── pyproject.toml               # Project metadata / dependencies
+├── requirements.txt             # Python dependencies
+├── router/
+│   └── router.py                # APIRouter: /, /api/travel, /health, /favicon.ico
+├── utils/
+│   ├── backend_helpers.py       # LLM/DB/Graph setup, startup/shutdown, run_travel_agent
+│   └── background_tasks.py      # Non-blocking DB save scheduling
 ├── graph/
 │   └── travel_graph.py          # Graph wiring (build_graph)
 ├── state/
-│   └── travel_state.py          # TravelState schema
+│   ├── travel_state.py          # TravelState schema
+│   └── shared_memory.py         # SharedMemory with optimistic locking
 ├── nodes/
-│   └── nodes.py                 # Nodes class (graph node functions)
+│   └── nodes.py                 # Nodes class (graph node functions, parallel research, commit)
 ├── enums/
 │   └── enums.py                 # Shared enums (agents, intent, state keys)
-├── mcp_client.py                # MCP client and per-server tool getters
-├── custom_weather_mcp_server.py # Local weather MCP server
+├── tools/
+│   ├── mcp_tools.py             # MCP client (tavily + weather persistent sessions)
+│   └── custom_weather_mcp_server.py # Local weather MCP server
 ├── database/
 │   ├── base_database.py         # BaseDatabase interface
 │   └── postgres_database.py     # PostgreSQL implementation
@@ -105,7 +193,10 @@ On startup the app connects to PostgreSQL, creates the table if needed and print
 │   ├── weather_agent.py         # WeatherAgent
 │   ├── itinerary_agent.py       # ItineraryAgent
 │   └── final_agent.py           # FinalAgent
-├── requirements.txt             # Python dependencies
+├── llm/                         # LLM factory (Groq)
+├── prompt_catalog/              # Agent prompts
+├── excalidraw_files/
+│   └── design.excalidraw        # System design diagram
 ├── static/                      # Static frontend assets
 └── templates/                   # HTML templates
 ```
@@ -119,9 +210,7 @@ Before running the project locally, make sure you have:
 - API keys for:
   - Groq
   - Tavily
-  - AviationStack
   - WeatherAPI (https://www.weatherapi.com/)
-- `uvx` available for local `aviationstack-mcp` usage (or adjust `mcp_client.py` accordingly)
 
 ## Environment Variables
 
@@ -130,7 +219,6 @@ Create a `.env` file in the project root with the following variables:
 ```env
 DATABASE_URL=postgresql://user:password@localhost:5432/travel_db
 GROQ_API_KEY=your_groq_api_key
-AVIATIONSTACK_API_KEY=your_aviationstack_api_key
 TAVILY_API_KEY=your_tavily_api_key
 WEATHERAPI_API_KEY=your_weatherapi_api_key
 DEFAULT_ORIGIN_IATA=DAC
@@ -162,7 +250,7 @@ http://127.0.0.1:8000/
 
 The app uses MCP behind the scenes, so there is no separate frontend change required after the environment is set up.
 
-If you need to customize the weather MCP server command, edit `mcp_client.py` and update the `weather` tool path to your local Python environment.
+If you need to customize the weather MCP server command, edit `tools/mcp_tools.py` and update the `weather` server path to your local Python environment.
 
 ## API Endpoints
 
@@ -180,11 +268,12 @@ curl -X POST http://127.0.0.1:8000/api/travel \
 ## How the Workflow Works
 
 1. The user submits a travel request.
-2. The flight agent calls the AviationStack MCP tools (airports, airlines, routes, schedules).
-3. The hotel agent calls the remote Tavily MCP search tools.
+2. The intent router classifies the request and selects the needed agents.
+3. The flight and hotel agents call the remote Tavily MCP search tools in parallel.
 4. The weather agent calls the custom weather MCP server tools.
-5. The itinerary agent creates a practical travel plan from the previous agents' research.
-6. The final response agent formats the answer, which is returned through the web API.
+5. Research results are committed to shared memory with optimistic locking.
+6. The itinerary agent creates a practical travel plan from the previous agents' research.
+7. The final response agent formats the answer, which is returned through the web API.
 
 ## Contributing
 

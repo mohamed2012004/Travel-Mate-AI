@@ -1,6 +1,7 @@
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
+from typing import Any
 
 from enums import AgentStatus
 
@@ -17,10 +18,30 @@ class AgentStateRecord:
     error: str = ""
     attempts: int = 0
     updated_at: datetime | None = None
+    id: int | None = None
 
     @property
     def is_completed(self) -> bool:
         return self.status == AgentStatus.COMPLETED and bool(self.output)
+
+
+@dataclass
+class VersionStateRecord:
+    """One shared-memory version snapshot for a run.
+
+    `id` is this table's own primary key. `run_id` groups every
+    version of one run, and `agent_state_id` is a foreign key to
+    the `id` of the `agent_states` row whose commit produced
+    this version (deleted together with that agent row).
+    """
+
+    run_id: str
+    agent_state_id: int
+    version: int
+    shared_memory: dict[str, Any] = field(default_factory=dict)
+    id: int | None = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
 
 
 class BaseDatabase(ABC):
@@ -72,3 +93,21 @@ class BaseDatabase(ABC):
     @abstractmethod
     async def get_unfinished_agents(self, limit: int = 20) -> list[AgentStateRecord]:
         """Return agent runs that started but never completed."""
+
+    @abstractmethod
+    async def save_version_state(
+        self,
+        run_id: str,
+        agent_state_id: int,
+        version: int,
+        shared_memory: dict[str, Any],
+    ) -> VersionStateRecord:
+        """Persist one version snapshot, linked by run_id and agent_states.id."""
+
+    @abstractmethod
+    async def get_latest_version_state(self, run_id: str) -> VersionStateRecord | None:
+        """Return the highest version snapshot stored for a run."""
+
+    @abstractmethod
+    async def get_version_states(self, run_id: str) -> list[VersionStateRecord]:
+        """Return every version snapshot for a run, oldest first."""

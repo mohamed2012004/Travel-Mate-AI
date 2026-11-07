@@ -20,6 +20,14 @@ class AgentName(StrEnum):
     FINAL = "final_agent"
 
 
+SECTION_LABELS: dict[AgentName, str] = {
+    AgentName.FLIGHT: "flights",
+    AgentName.HOTEL: "hotels",
+    AgentName.WEATHER: "weather",
+    AgentName.ITINERARY: "itinerary",
+}
+
+
 class Intent(StrEnum):
     """Coarse label for what the traveller is asking for."""
 
@@ -55,6 +63,8 @@ class StateKey(StrEnum):
     WEATHER_RESULTS = "weather_results"
     ITINERARY = "itinerary"
     LLM_CALLS = "llm_calls"
+    VERSION = "version"
+    SHARED_MEMORY = "shared_memory"
 
 
 __all__ = [
@@ -62,5 +72,6 @@ __all__ = [
     "AgentName",
     "CheckpointerBackend",
     "Intent",
+    "SECTION_LABELS",
     "StateKey",
 ]

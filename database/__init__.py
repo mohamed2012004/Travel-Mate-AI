@@ -1,12 +1,11 @@
 from database.base_database import (
     AgentStateRecord,
     BaseDatabase,
+    VersionStateRecord,
 )
-from database.postgres_database import (
-    CONNECT_TIMEOUT_SECONDS,
-    PostgresDatabase,
-    get_database_url,
-)
+from database.enum_database import CONNECT_TIMEOUT_SECONDS
+from database.postgres_database import PostgresDatabase
+from database.utils_database import get_database_url
 from enums import AgentStatus
 
 __all__ = [
@@ -15,5 +14,6 @@ __all__ = [
     "BaseDatabase",
     "CONNECT_TIMEOUT_SECONDS",
     "PostgresDatabase",
+    "VersionStateRecord",
     "get_database_url",
 ]

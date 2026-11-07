@@ -1,4 +1,5 @@
 from enums.enums import (
+    SECTION_LABELS,
     AgentName,
     AgentStatus,
     CheckpointerBackend,
@@ -11,5 +12,6 @@ __all__ = [
     "AgentName",
     "CheckpointerBackend",
     "Intent",
+    "SECTION_LABELS",
     "StateKey",
 ]
