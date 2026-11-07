@@ -1,0 +1,8 @@
+{
+  "dependencies": ["."],
+  "graphs": {
+    "travel_agent": "backend:graph"
+  },
+  "env":"./.env"
+
+}
