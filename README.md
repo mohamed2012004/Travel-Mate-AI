@@ -102,11 +102,20 @@ flowchart TD
     Itinerary --> Final
     Final --> END([END])
 
-    Flight -.-> SM["SharedMemory<br/>optimistic locking"]
+    Flight -.-> SM["SharedMemory<br/>optimistic locking + version bump"]
     Hotel -.-> SM
     Weather -.-> SM
+    Itinerary -.->|reads flight/hotel/weather| SM
+    Final -.->|reads snapshot at current version, writes it back| SM
     SM -.-> PG[("PostgreSQL<br/>episodic memory")]
 ```
+
+### Shared Memory & Versions — Itinerary / Final
+
+- **Research agents (Flight/Hotel/Weather)** are the only ones that *write* to `SharedMemory` with optimistic locking: each commits its own field (`flight`/`hotel`/`weather`) via `Nodes._commit()` → `SharedMemory.update_with_retry()`, which bumps `version` by 1 (e.g. `1 → 2 → 3 → 4` for 3 parallel agents).
+- **Itinerary Agent** *reads* the shared research data (`flight_results`/`hotel_results`/`weather_results` from `TravelState`, populated from the shared-memory commits) to build the itinerary, but it does **not** commit to `SharedMemory` and does **not** bump `version` — `SharedMemory.FIELDS` is only `("hotel", "flight", "weather")`.
+- **Final Agent** *reads* the full shared-memory snapshot and writes it back at the **current** version (`Nodes.final_agent()` → `snapshot["version"]`), but also does **not** bump `version` and adds no `itinerary`/`final` field. It is the sole writer in its step, so the full authoritative snapshot can be written back without a concurrent-update conflict.
+- Both Itinerary and Final therefore share data through the same `TravelState` + `SharedMemory` snapshot, and both *use* the current `version` for ordering, but only the parallel research agents advance it.
 
 Agent responsibilities:
 
@@ -271,9 +280,9 @@ curl -X POST http://127.0.0.1:8000/api/travel \
 2. The intent router classifies the request and selects the needed agents.
 3. The flight and hotel agents call the remote Tavily MCP search tools in parallel.
 4. The weather agent calls the custom weather MCP server tools.
-5. Research results are committed to shared memory with optimistic locking.
-6. The itinerary agent creates a practical travel plan from the previous agents' research.
-7. The final response agent formats the answer, which is returned through the web API.
+5. Research results are committed to shared memory with optimistic locking (each commit bumps `version`).
+6. The itinerary agent reads the shared research data and creates a practical travel plan (no version bump).
+7. The final agent reads the shared-memory snapshot at the current version and formats the answer, which is returned through the web API.
 
 ## Contributing
 
