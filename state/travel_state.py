@@ -1,5 +1,5 @@
 import operator
-from typing import Annotated, Any, TypedDict
+from typing import Annotated, Any, NotRequired, TypedDict
 
 from langchain_core.messages import AnyMessage
 
@@ -51,3 +51,6 @@ class TravelState(TypedDict):
     llm_calls: Annotated[int, operator.add]
     version: Annotated[int, _latest_version]
     shared_memory: Annotated[dict[str, Any], _merge_shared_memory]
+    guard_checked: NotRequired[bool]
+    guard_blocked: NotRequired[bool]
+    guard_reason: NotRequired[str]

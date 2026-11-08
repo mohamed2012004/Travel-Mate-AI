@@ -18,6 +18,8 @@ class AgentName(StrEnum):
     WEATHER = "weather_agent"
     ITINERARY = "itinerary_agent"
     FINAL = "final_agent"
+    INPUT_GUARD = "input_guard"
+    OUTPUT_GUARD = "output_guard"
 
 
 SECTION_LABELS: dict[AgentName, str] = {

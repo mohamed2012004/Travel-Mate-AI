@@ -132,6 +132,47 @@ class Nodes:
         snapshot = await self._commit(state, field, result)
         return result, llm_calls, snapshot
 
+    async def input_guard(self, state: AgentState) -> dict:
+        if state.get("guard_checked"):
+            return {"guard_checked": True}
+        try:
+            from guardrails import check_input
+            result = await check_input(str(state.get(StateKey.USER_QUERY, "")))
+        except Exception as error:
+            logger.warning("[guardrails] input_guard failed, fail-open: %s", error)
+            return {"guard_checked": True, "guard_blocked": False, "guard_reason": "fail_open"}
+        if result.blocked or result.canned:
+            return {
+                "guard_checked": True,
+                "guard_blocked": result.blocked,
+                "guard_reason": result.reason,
+                StateKey.MESSAGES: [AIMessage(content=result.message)],
+            }
+        return {"guard_checked": True, "guard_blocked": False, "guard_reason": ""}
+
+    def after_input_guard(self, state: AgentState) -> str:
+        return str(AgentName.OUTPUT_GUARD) if state.get("guard_blocked") else str(AgentName.ROUTER)
+
+    async def output_guard(self, state: AgentState) -> dict:
+        messages = state.get(StateKey.MESSAGES) or []
+        if not messages:
+            return {}
+        from agents import message_text as _message_text
+        last_text = _message_text(messages[-1])
+        try:
+            from guardrails import check_output
+            result = await check_output(last_text)
+        except Exception as error:
+            logger.warning("[guardrails] output_guard failed, fail-open: %s", error)
+            return {}
+        if result.blocked:
+            return {
+                "guard_blocked": True,
+                "guard_reason": result.reason,
+                StateKey.MESSAGES: [AIMessage(content=result.message)],
+            }
+        return {"guard_blocked": bool(state.get("guard_blocked", False)), "guard_reason": str(state.get("guard_reason", "") or "")}
+
     async def route_intent(self, state: AgentState) -> dict:
         """Classify the request so only the needed agents run."""
 

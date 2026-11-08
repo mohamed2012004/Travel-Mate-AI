@@ -24,18 +24,27 @@ async function authRequest(path) {
     hideError();
     const email = document.getElementById("authEmail").value.trim();
     const password = document.getElementById("authPassword").value;
-    const res = await fetch(path, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email, password }),
-    });
-    const data = await res.json().catch(() => ({}));
+    let res, data;
+    try {
+        res = await fetch(path, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ email, password }),
+        });
+        data = await res.json().catch(() => ({}));
+    } catch (error) {
+        showError("Cannot reach server. Is uvicorn running on port 8000? (" + error.message + ")");
+        return;
+    }
     if (!res.ok) {
-        showError(data.detail || "Auth failed");
+        const detail = Array.isArray(data.detail) ? (data.detail[0]?.msg || "Auth failed") : (data.detail || data.error || "Auth failed");
+        showError(detail);
         return;
     }
     localStorage.setItem("access_token", data.access_token);
     updateAuthUI();
+    showError("");
+    hideError();
 }
 
 function authLogout() {
@@ -70,6 +79,7 @@ function showError(message) {
 
     errorBox.textContent = message;
     errorBox.classList.remove("hidden");
+    if (message) errorBox.scrollIntoView({ behavior: "smooth", block: "center" });
 }
 
 function hideError() {
@@ -79,12 +89,17 @@ function hideError() {
     errorBox.textContent = "";
 }
 
-function showResult(answer, threadId) {
+function showResult(answer, threadId, guardBlocked) {
     latestAnswerMarkdown = answer;
 
     const resultSection = document.getElementById("resultSection");
     const resultBox = document.getElementById("resultBox");
     const threadInfo = document.getElementById("threadInfo");
+    const resultActions = document.querySelector(".result-actions");
+
+    if (resultActions) {
+        resultActions.classList.toggle("hidden", !!guardBlocked);
+    }
 
     if (typeof marked !== "undefined") {
         resultBox.innerHTML = marked.parse(answer);
@@ -127,16 +142,22 @@ async function sendMessage() {
             })
         });
 
-        const data = await response.json();
+        const data = await response.json().catch(() => ({}));
+
+        if (response.status === 401) {
+            localStorage.removeItem("access_token");
+            updateAuthUI();
+            throw new Error((data.detail || "Session expired. Please log in again.") + " (Guardrails never ran \u2014 auth blocks the request first.)");
+        }
 
         if (!response.ok || !data.success) {
-            throw new Error(data.error || "Something went wrong.");
+            throw new Error(data.error || data.detail || "Something went wrong.");
         }
 
         currentThreadId = data.thread_id;
         localStorage.setItem("travel_thread_id", currentThreadId);
 
-        showResult(data.answer, data.thread_id);
+        showResult(data.answer, data.thread_id, data.guard_blocked);
 
     } catch (error) {
         showError(error.message);
@@ -174,6 +195,10 @@ function downloadPDF() {
 
     if (!latestAnswerMarkdown || !pdfContent) {
         showError("No travel plan available to download.");
+        return;
+    }
+    if (typeof html2pdf === "undefined") {
+        showError("PDF library failed to load. Check internet connection and retry.");
         return;
     }
 

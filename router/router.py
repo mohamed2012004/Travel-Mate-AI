@@ -69,6 +69,8 @@ async def travel_planner(
                 "hotel_results": result["hotel_results"],
                 "itinerary": result["itinerary"],
                 "llm_calls": result["llm_calls"],
+                "guard_blocked": result.get("guard_blocked", False),
+                "guard_reason": result.get("guard_reason", ""),
             }
         )
     except Exception as e:

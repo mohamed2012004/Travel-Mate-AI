@@ -16,8 +16,15 @@ def build_graph(nodes: Nodes) -> StateGraph:
     graph.add_node(AgentName.WEATHER, nodes.weather_agent)
     graph.add_node(AgentName.ITINERARY, nodes.itinerary_agent)
     graph.add_node(AgentName.FINAL, nodes.final_agent)
+    graph.add_node(AgentName.INPUT_GUARD, nodes.input_guard)
+    graph.add_node(AgentName.OUTPUT_GUARD, nodes.output_guard)
 
-    graph.add_edge(START, AgentName.ROUTER)
+    graph.add_edge(START, AgentName.INPUT_GUARD)
+    graph.add_conditional_edges(
+        AgentName.INPUT_GUARD,
+        nodes.after_input_guard,
+        [AgentName.ROUTER, AgentName.OUTPUT_GUARD],
+    )
     graph.add_conditional_edges(
         AgentName.ROUTER,
         nodes.route_from_router,
@@ -36,6 +43,7 @@ def build_graph(nodes: Nodes) -> StateGraph:
             [AgentName.ITINERARY, AgentName.FINAL],
         )
     graph.add_edge(AgentName.ITINERARY, AgentName.FINAL)
-    graph.add_edge(AgentName.FINAL, END)
+    graph.add_edge(AgentName.FINAL, AgentName.OUTPUT_GUARD)
+    graph.add_edge(AgentName.OUTPUT_GUARD, END)
 
     return graph
