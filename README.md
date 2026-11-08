@@ -118,13 +118,6 @@ flowchart TD
     SM -.-> PG[("PostgreSQL<br/>episodic memory")]
 ```
 
-### Shared Memory & Versions — Itinerary / Final
-
-- **Research agents (Flight/Hotel/Weather)** are the only ones that *write* to `SharedMemory` with optimistic locking: each commits its own field (`flight`/`hotel`/`weather`) via `Nodes._commit()` → `SharedMemory.update_with_retry()`, which bumps `version` by 1 (e.g. `1 → 2 → 3 → 4` for 3 parallel agents).
-- **Itinerary Agent** *reads* the shared research data (`flight_results`/`hotel_results`/`weather_results` from `TravelState`, populated from the shared-memory commits) to build the itinerary, but it does **not** commit to `SharedMemory` and does **not** bump `version` — `SharedMemory.FIELDS` is only `("hotel", "flight", "weather")`.
-- **Final Agent** *reads* the full shared-memory snapshot and writes it back at the **current** version (`Nodes.final_agent()` → `snapshot["version"]`), but also does **not** bump `version` and adds no `itinerary`/`final` field. It is the sole writer in its step, so the full authoritative snapshot can be written back without a concurrent-update conflict.
-- Both Itinerary and Final therefore share data through the same `TravelState` + `SharedMemory` snapshot, and both *use* the current `version` for ordering, but only the parallel research agents advance it.
-
 ### Self-Healing & Instruction Fidelity
 
 Self-healing (`utils/self_healing.py`) keeps prompt/tool injection and corrupted output from propagating through the workflow:
@@ -136,22 +129,11 @@ Self-healing (`utils/self_healing.py`) keeps prompt/tool injection and corrupted
 
 ### Versioned Shared Memory in the Database (Conflict Solving)
 
-Parallel research agents all read the shared memory at the same base `version` and then race to commit. Versions + optimistic locking solve that conflict:
-
-1. Each research agent commits **one field** (`flight`/`hotel`/`weather`) through `Nodes._commit()` → `SharedMemory.update_with_retry()`.
-2. `SharedMemory.update()` only applies the write if the caller's `expected_version` still equals the current `version`; otherwise it raises `VersionConflictError` **instead of overwriting** the newer data written by a parallel agent.
-3. On conflict, `update_with_retry()` re-reads the latest snapshot, merges the pending field into it, and retries (up to 3 attempts), then bumps `version` by 1 (`1 → 2 → 3 → 4` for three parallel agents).
-4. Every successful commit is also persisted (background, best-effort) to PostgreSQL **`version_states`** (`run_id`, `agent_state_id`, `version`, `shared_memory` JSONB) via `Nodes._persist_version()` → `PostgresDatabase.save_version_state()`. That gives a per-version audit trail of exactly what each agent saw and wrote, linked to its `agent_states` row, and lets a crashed run be replayed/recovered version-by-version instead of losing the whole shared memory.
+Parallel agents write to the same shared memory at the same time, so versions and optimistic locking prevent them from overwriting each other: a stale write is rejected and retried against the latest version. Every accepted version is also saved in the database, giving an audit trail per version and allowing crashed runs to be recovered.
 
 ### NeMo Guardrails (in the Graph)
 
-NeMo Guardrails is used **only inside the graph**, as a single **Guardrails node** that contains greeting, jailbreak, sensitive-topic, off-topic, PII, capabilities, farewell and output-sanitization handling — there is no guard check before `graph.ainvoke()` in the app:
-
-- **Setup** (`guardrails/rails.py`): `RailsConfig.from_content(colang_content=config.COLANG, yaml_content=config.YAML)` + `LLMRails(config, llm=get_guard_llm())`, with custom Python actions registered (`detect_pii_in_input`, `sanitize_output` from `guardrails/actions.py`). The guard LLM is a dedicated Groq model (`GROQ_GUARD_KEY` / `GUARD_MODEL`), separate from the main chat LLM.
-- **Colang** (`guardrails/config.py`): flows for off-topic, jailbreak, sensitive topics, capabilities, farewell, a PII input action (`$pii_found = execute detect_pii_in_input`) and a sensitive-output action (`$sensitive_found = execute sanitize_output`). YAML `rails.input.flows` enables `check input for pii`, `capabilities`, `farewell`; `rails.output.flows` enables `sanitize bot response`. Greeting is intentionally **not** a Colang flow.
-- **Input guard node** (`graph/travel_graph.py:22`, `nodes/nodes.py:input_guard`): calls `guardrails.check_input()`, which first makes a **specific greeting-only LLM call** (`guardrails/guards.py:_is_greeting()` — YES/NO, temperature 0) and returns the canned greeting reply on `YES`, then runs NeMo `check_async()` (systematic rails) and `generate_async()` (dialog rails, comparing against `CANNED` replies). Together — greeting LLM + NeMo Colang rails — they form the single Guardrails node containing greeting, jailbreak, sensitive-topic, off-topic, PII, capabilities and farewell handling. Blocked/canned results route to `OUTPUT_GUARD → END`, skipping the router and agents.
-- **Output guard node** (`graph/travel_graph.py:46`, `nodes/nodes.py:output_guard`): calls `guardrails.check_output()` on the final answer; NeMo's `sanitize_output` action withholds output containing credentials, exploit code, private keys, or card/passport data.
-- **Fail-open:** if NeMo or the guard LLM is unavailable, checks return `allowed` with a `nemo_*_fail_open` reason (logged as a warning) so the travel workflow keeps running. Disable entirely with `GUARDRAILS_ENABLED=false`.
+The graph has a single Guardrails node containing greeting, jailbreak, sensitive-topic, off-topic, PII, capabilities, farewell and output-sanitization handling. Blocked or canned inputs return their canned reply and skip the rest of the workflow; the final answer is checked again before it is returned. If the guardrails are unavailable, the workflow continues anyway.
 
 Agent responsibilities:
 
