@@ -26,15 +26,27 @@ AGENTS_BY_INTENT: dict[Intent, list[AgentName]] = {
 
 
 class RouteDecision(BaseModel):
-    """The traveller's intent and the agents that request needs."""
+    """Structured intent output, e.g. {"intent": "flights", "agents": ["flight_agent"]}.
+
+    `agents` never includes final_agent — final_agent always runs last
+    to summarize. Single-topic intents (flights/hotels/weather) run only
+    that one research agent + final; itinerary runs only for full_trip
+    (all detail) or an explicit itinerary request.
+    """
 
     intent: Intent = Field(description="The traveller's intent")
     agents: list[AgentName] = Field(
         description=(
             "Agents that must run for this request, in any order. "
-            "Never include final_agent."
+            "flights -> [flight_agent], hotels -> [hotel_agent], "
+            "weather -> [weather_agent], full_trip -> "
+            "[flight_agent, hotel_agent, weather_agent, itinerary_agent], "
+            "general -> []. Never include final_agent."
         )
     )
+
+    def to_dict(self) -> dict:
+        return {"intent": str(self.intent), "agents": [str(a) for a in self.agents]}
 
 
 def message_text(message: AnyMessage) -> str:
@@ -58,7 +70,11 @@ def message_text(message: AnyMessage) -> str:
 
 
 def normalize_route_decision(decision: RouteDecision) -> RouteDecision:
-    """Keep the agent list consistent with the chosen intent."""
+    """Pin agents to the intent, ignoring any extra LLM suggestions.
+
+    Single research topic -> only that agent (then final_agent summary);
+    itinerary -> only when the user wants all detail (full_trip).
+    """
 
     intent = decision.intent
 
@@ -68,16 +84,9 @@ def normalize_route_decision(decision: RouteDecision) -> RouteDecision:
     if intent == Intent.GENERAL:
         return RouteDecision(intent=intent, agents=[])
 
-    agents: list[AgentName] = []
-    for agent in decision.agents:
-        if agent == AgentName.FINAL or agent in agents:
-            continue
-        agents.append(agent)
-
-    if not agents:
-        agents = list(AGENTS_BY_INTENT.get(intent, []))
-
-    return RouteDecision(intent=intent, agents=agents)
+    return RouteDecision(
+        intent=intent, agents=list(AGENTS_BY_INTENT.get(intent, []))
+    )
 
 
 def agent_section(

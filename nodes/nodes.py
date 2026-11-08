@@ -139,7 +139,8 @@ class Nodes:
             str(state.get(StateKey.USER_QUERY, ""))
         )
         selected = [str(agent) for agent in decision.agents]
-        logger.info("[router] intent=%s agents=%s", decision.intent, selected)
+        structured = decision.to_dict()
+        logger.info("[router] structured intent=%s", structured)
         snapshot = self._shared_memory(state, reset=True).snapshot()
 
         return {
@@ -149,7 +150,7 @@ class Nodes:
             StateKey.SHARED_MEMORY: snapshot,
             StateKey.MESSAGES: [
                 AIMessage(
-                    content=f"Router: intent={decision.intent} agents={selected}"
+                    content=str(structured)
                 )
             ],
             StateKey.LLM_CALLS: 1,

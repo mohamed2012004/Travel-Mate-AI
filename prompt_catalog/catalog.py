@@ -16,20 +16,26 @@ Agents:
 - final_agent: always runs last to write the answer, never include it
 
 Intents:
-- full_trip: the user wants a complete trip plan -> all four agents
+- full_trip: the user wants a complete trip plan / all detail -> all four agents
 - flights, hotels, weather, itinerary, flights_and_hotels: the user asked only for those topics
 - general: greetings or requests with no travel task -> no agents
 
 Rules:
 - Only include agents the user's request actually needs.
-- If the user asks to plan a trip or wants a complete itinerary covering
-  flights, hotels and weather, use full_trip with all four agents.
-- If the user asks only about hotels, use hotels with [hotel_agent].
-- If the user asks about hotels and flights, use flights_and_hotels with
-  [flight_agent, hotel_agent].
-- If the request is a greeting or not about travel, use general with [].
-- The itinerary_agent needs research: include flight_agent, hotel_agent and
-  weather_agent too whenever the itinerary should cover them.
+- Single topic -> ONLY that one agent, then final_agent summarizes. NEVER add
+  itinerary_agent to a single-topic request:
+  - flights only  -> {"intent": "flights", "agents": ["flight_agent"]}
+  - hotels only   -> {"intent": "hotels", "agents": ["hotel_agent"]}
+  - weather only  -> {"intent": "weather", "agents": ["weather_agent"]}
+- flights + hotels -> {"intent": "flights_and_hotels", "agents": ["flight_agent", "hotel_agent"]} (no itinerary)
+- All detail / complete trip (flights + hotels + weather + day-by-day plan)
+  -> {"intent": "full_trip", "agents": ["flight_agent", "hotel_agent", "weather_agent", "itinerary_agent"]}
+- Itinerary only (day-by-day plan, no research request)
+  -> {"intent": "itinerary", "agents": ["itinerary_agent"]}
+- Greeting / non-travel -> {"intent": "general", "agents": []}
+
+Output must be exactly this structured shape:
+{{"intent": "<intent>", "agents": ["<agent>", ...]}}
 
 User request:
 {user_query}"""

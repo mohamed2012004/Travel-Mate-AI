@@ -63,6 +63,7 @@ async def travel_planner(
                 "thread_id": result["thread_id"],
                 "run_id": result["run_id"],
                 "intent": result.get("intent", ""),
+                "intent_decision": result.get("intent_decision", {}),
                 "answer": result["answer"],
                 "flight_results": result["flight_results"],
                 "hotel_results": result["hotel_results"],

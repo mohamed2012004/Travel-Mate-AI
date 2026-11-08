@@ -172,6 +172,10 @@ async def run_travel_agent(
         "thread_id": thread_id,
         "run_id": run_id,
         "intent": result.get(StateKey.INTENT, ""),
+        "intent_decision": {
+            "intent": result.get(StateKey.INTENT, ""),
+            "agents": list(result.get(StateKey.SELECTED_AGENTS, [])),
+        },
         "answer": final_answer,
         "flight_results": result.get(StateKey.FLIGHT_RESULTS, ""),
         "hotel_results": result.get(StateKey.HOTEL_RESULTS, ""),
