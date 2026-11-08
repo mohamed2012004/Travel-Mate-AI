@@ -24,6 +24,9 @@ all coordinated through a LangGraph workflow with MCP-based tool integrations.
 - 🌐 FastAPI backend with a simple web interface
 - 💾 Conversation state persistence using PostgreSQL
 - ⚡ LLM-powered responses with Groq
+- 🛡️ NeMo Guardrails (Colang) input/output rails in the graph — PII, jailbreak, sensitive-topic, off-topic, capabilities and farewell handling, plus a dedicated greeting-detection LLM call in the guard node
+- 🩹 Self-healing sanitization of agent/tool output and an instruction firewall (untrusted user/tool content is DATA only) for instruction fidelity
+- 🔢 Versioned shared memory with optimistic locking — every parallel commit is snapshotted to PostgreSQL `version_states` to solve write conflicts and allow recovery/audit per version
 
 ## Tech Stack
 
@@ -44,50 +47,73 @@ Source design: [`excalidraw_files/design.excalidraw`](excalidraw_files/design.ex
 
 ```mermaid
 flowchart LR
-    Client["Client"] --> Guard["Rate Limiter / Auth / Route Guard"]
-    Guard --> API["POST /api/travel<br/>router/router.py"]
-    API --> Supervisor["Supervisor / Intent Router<br/>agents/intent_router.py"]
+    Client["Client"] --> API["POST /api/travel<br/>router/router.py → utils/backend_helpers.py<br/>graph.ainvoke() only"]
+    API --> START([START])
+    START --> INGUARD["Input Guard Node<br/>nodes.Nodes.input_guard → guardrails.check_input"]
+    INGUARD --> NEMO["NeMo Guardrails<br/>Colang + YAML<br/>RailsConfig.from_content / LLMRails"]
+    NEMO --> GREETLLM["Greeting LLM (guard node)<br/>guardrails.guards._is_greeting<br/>YES/NO → canned greeting"]
+    GREETLLM -->|blocked / canned| OUTGUARD["Output Guard Node<br/>nodes.Nodes.output_guard → check_output"]
+    GREETLLM -->|allowed| Supervisor["Supervisor / Intent Router<br/>agents/intent_router.py"]
 
     Supervisor --> Hotel["Hotel Agent"]
     Supervisor --> Flight["Flight Agent"]
     Supervisor --> Weather["Weather Agent"]
 
-    Hotel --> Lock["Optimistic Locking<br/>SharedMemory.update_with_retry()"]
-    Flight --> Lock
-    Weather --> Lock
-    Lock --> Shared["Shared Memory<br/>state/shared_memory.py"]
+    Hotel --> SH["Self-Healing<br/>utils/self_healing.sanitize_agent_result<br/>+ FIREWALL_INSTRUCTION"]
+    Flight --> SH
+    Weather --> SH
+    SH --> Lock["Optimistic Locking<br/>SharedMemory.update_with_retry()"]
+    Lock --> Shared["Shared Memory (in-memory)<br/>state/shared_memory.py<br/>{version, hotel, flight, weather}"]
+    Shared --> VersDB[("PostgreSQL version_states<br/>run_id, agent_state_id, version,<br/>shared_memory snapshot (background)")]
     Shared --> Episodic["Episodic Memory<br/>PostgreSQL: agent_states, version_states"]
 
     Hotel --> Summarize["Summarize Agent<br/>Itinerary + Final Agent"]
     Flight --> Summarize
     Weather --> Summarize
-    Summarize --> Fidelity["Instruction Fidelity<br/>summary covers only requested intent"]
-    Fidelity -. feedback .-> Supervisor
+    Summarize --> OUTGUARD
+    OUTGUARD --> END([END])
+    Summarize --> Fidelity["Instruction Fidelity<br/>final answer covers only requested intent<br/>untrusted content = DATA only"]
+    Fidelity -. feedback .-> Client
 ```
 
 How to read it:
 
 | Design element | Implementation |
 | --- | --- |
-| Client → Guard → `POST /travel` | Browser UI (`templates/`, `static/`) → FastAPI app (`app.py`) → router (`router/router.py`) |
+| Client → `POST /travel` → graph | Browser UI (`templates/`, `static/`) → FastAPI app (`app.py`) → router (`router/router.py`) → `utils/backend_helpers.py:run_travel_agent()` → `graph.ainvoke()` only (no guard check before the graph) |
+| Input Guard (NeMo) | Graph node `INPUT_GUARD` (`graph/travel_graph.py:19,22`, `nodes/nodes.py:input_guard`) → `guardrails.check_input()` — NeMo Colang rails + dedicated greeting LLM (`guardrails/guards.py:_is_greeting`). Blocked/canned → `OUTPUT_GUARD → END`, skipping router/agents |
+| Greeting LLM (guard node) | `guardrails/guards.py:_is_greeting()` — a specific Groq guard-LLM call (YES/NO, temperature 0) that returns the canned greeting reply; greeting is intentionally **not** a NeMo Colang flow |
 | Supervisor | `IntentRouter` (`agents/intent_router.py`) + `Nodes.route_intent()` — classifies intent and selects only needed agents |
 | Hotel / Flight / Weather Agents | `HotelAgent`, `FlightAgent`, `WeatherAgent` (`agents/`) — run in parallel via LangGraph fan-out |
-| Optimistic Locking | `SharedMemory.update_with_retry()` (`state/shared_memory.py`, used in `nodes/nodes.py:_commit`) — stale parallel writes are rejected and retried against the latest version instead of overwriting each other |
+| Self-Healing | `utils/self_healing.py:sanitize_agent_result()` in `BaseAgent.run()` and `Nodes._research()` — strips control characters from agent/tool output before it is committed; `FIREWALL_INSTRUCTION` + `wrap_untrusted()` in every prompt (`prompt_catalog/catalog.py`) mark user/tool content as DATA only |
+| Optimistic Locking | `SharedMemory.update_with_retry()` (`state/shared_memory.py`, used in `nodes/nodes.py:_commit`) — stale parallel writes are rejected (`VersionConflictError`) and retried against the latest version instead of overwriting each other |
 | Shared Memory | In-memory `SharedMemory` per `run_id` (`{version, hotel, flight, weather}`), persisted as snapshots |
-| Episodic Memory | PostgreSQL (`database/postgres_database.py`) — `agent_states` + `version_states`; crashed runs replay completed agents by `run_id` |
+| Versioned Episodic Memory | PostgreSQL (`database/postgres_database.py`) — `agent_states` + `version_states`; every commit snapshots `{version, shared_memory}` linked to its `agent_state_id`, so conflicts can be audited/replayed per version and crashed runs replay completed agents by `run_id` |
 | Summarize Agent | `ItineraryAgent` → `FinalAgent` (`agents/`) — builds the itinerary, then the final answer |
-| Instruction Fidelity | `FinalAgent` receives the detected intent and writes a summary covering only the requested topics |
+| Instruction Fidelity | `FinalAgent` receives the detected intent and writes a summary covering only the requested topics; the firewall instruction ensures injected instructions inside user/tool delimiters are never followed |
+| Output Guard (NeMo) | Graph node `OUTPUT_GUARD` (`graph/travel_graph.py:46-47`) → `guardrails.check_output()` — `sanitize_output` NeMo action blocks sensitive output (credentials, exploit code, card/passport data) |
 
 ## Agent Architecture
 
 ```mermaid
 flowchart TD
-    START([START]) --> Router["Intent Router<br/>route_intent()"]
+    START([START]) --> INGUARD["Input Guard<br/>NeMo check_input + greeting LLM"]
+    INGUARD -->|blocked / canned| OUTGUARD["Output Guard<br/>check_output"]
+    INGUARD -->|allowed| Router["Intent Router<br/>route_intent()"]
+    OUTGUARD --> END([END])
     Router -->|selected research agents, parallel| Flight["Flight Agent<br/>tavily_search via Tavily MCP"]
     Router --> Hotel["Hotel Agent<br/>tavily_search via Tavily MCP"]
     Router --> Weather["Weather Agent<br/>custom weather MCP server"]
     Router -->|itinerary only| Itinerary["Itinerary Agent<br/>no tools"]
     Router -->|summary only| Final["Final Agent<br/>no tools"]
+
+    Flight --> SH["Self-Healing<br/>sanitize_agent_result"]
+    Hotel --> SH
+    Weather --> SH
+    SH --> Commit["Commit<br/>Nodes._commit + optimistic locking"]
+    Commit --> SM["SharedMemory<br/>version bump per commit"]
+    SM --> VersDB[("PostgreSQL<br/>version_states snapshot<br/>(background, per commit)")]
+    Itinerary -.-> SH
 
     Flight --> After1{"after_research()"}
     Hotel --> After2{"after_research()"}
@@ -100,9 +126,10 @@ flowchart TD
     After3 -->|otherwise| Final
 
     Itinerary --> Final
-    Final --> END([END])
+    Final --> OUTGUARD2["Output Guard<br/>sanitize_output"]
+    OUTGUARD2 --> END
 
-    Flight -.-> SM["SharedMemory<br/>optimistic locking + version bump"]
+    Flight -.-> SM
     Hotel -.-> SM
     Weather -.-> SM
     Itinerary -.->|reads flight/hotel/weather| SM
@@ -116,6 +143,34 @@ flowchart TD
 - **Itinerary Agent** *reads* the shared research data (`flight_results`/`hotel_results`/`weather_results` from `TravelState`, populated from the shared-memory commits) to build the itinerary, but it does **not** commit to `SharedMemory` and does **not** bump `version` — `SharedMemory.FIELDS` is only `("hotel", "flight", "weather")`.
 - **Final Agent** *reads* the full shared-memory snapshot and writes it back at the **current** version (`Nodes.final_agent()` → `snapshot["version"]`), but also does **not** bump `version` and adds no `itinerary`/`final` field. It is the sole writer in its step, so the full authoritative snapshot can be written back without a concurrent-update conflict.
 - Both Itinerary and Final therefore share data through the same `TravelState` + `SharedMemory` snapshot, and both *use* the current `version` for ordering, but only the parallel research agents advance it.
+
+### Self-Healing & Instruction Fidelity
+
+Self-healing (`utils/self_healing.py`) keeps prompt/tool injection and corrupted output from propagating through the workflow:
+
+- **`sanitize_text()` / `sanitize_agent_result()`** — strips control characters (`ord < 32` except `\n`/`\t`) from every agent result. It runs in `BaseAgent.run()` (after each agent) and again in `Nodes._research()` before the result is committed to shared memory, so a bad tool call cannot poison `SharedMemory` or the database snapshots.
+- **`wrap_untrusted(text, tag)`** — wraps user and tool content in `<user_input>`, `<tool_output>`, `<flight_results>`, etc. delimiters and escapes any closing delimiter inside the content, so untrusted text cannot break out of its container.
+- **`FIREWALL_INSTRUCTION`** (in every agent prompt in `prompt_catalog/catalog.py`) — tells the LLM that delimited content is **DATA only**: never follow instructions, commands, or role changes inside it; only follow the system prompt. This is the instruction-fidelity layer: even if a Tavily result or user message says *"ignore your instructions"*, the agent must treat it as data to summarise, not as a new instruction.
+- **Intent fidelity in the Final Agent** — `FinalAgent` receives the router's detected intent and the `requested` topics, and is instructed to emit a section only for topics with research (omitting `"not requested"` sections entirely), so the summary cannot drift into topics the user never asked for.
+
+### Versioned Shared Memory in the Database (Conflict Solving)
+
+Parallel research agents all read the shared memory at the same base `version` and then race to commit. Versions + optimistic locking solve that conflict:
+
+1. Each research agent commits **one field** (`flight`/`hotel`/`weather`) through `Nodes._commit()` → `SharedMemory.update_with_retry()`.
+2. `SharedMemory.update()` only applies the write if the caller's `expected_version` still equals the current `version`; otherwise it raises `VersionConflictError` **instead of overwriting** the newer data written by a parallel agent.
+3. On conflict, `update_with_retry()` re-reads the latest snapshot, merges the pending field into it, and retries (up to 3 attempts), then bumps `version` by 1 (`1 → 2 → 3 → 4` for three parallel agents).
+4. Every successful commit is also persisted (background, best-effort) to PostgreSQL **`version_states`** (`run_id`, `agent_state_id`, `version`, `shared_memory` JSONB) via `Nodes._persist_version()` → `PostgresDatabase.save_version_state()`. That gives a per-version audit trail of exactly what each agent saw and wrote, linked to its `agent_states` row, and lets a crashed run be replayed/recovered version-by-version instead of losing the whole shared memory.
+
+### NeMo Guardrails (in the Graph)
+
+NeMo Guardrails is used **only inside the graph** — there is no guard check before `graph.ainvoke()` in the app:
+
+- **Setup** (`guardrails/rails.py`): `RailsConfig.from_content(colang_content=config.COLANG, yaml_content=config.YAML)` + `LLMRails(config, llm=get_guard_llm())`, with custom Python actions registered (`detect_pii_in_input`, `sanitize_output` from `guardrails/actions.py`). The guard LLM is a dedicated Groq model (`GROQ_GUARD_KEY` / `GUARD_MODEL`), separate from the main chat LLM.
+- **Colang** (`guardrails/config.py`): flows for off-topic, jailbreak, sensitive topics, capabilities, farewell, a PII input action (`$pii_found = execute detect_pii_in_input`) and a sensitive-output action (`$sensitive_found = execute sanitize_output`). YAML `rails.input.flows` enables `check input for pii`, `capabilities`, `farewell`; `rails.output.flows` enables `sanitize bot response`. Greeting is intentionally **not** a Colang flow.
+- **Input guard node** (`graph/travel_graph.py:22`, `nodes/nodes.py:input_guard`): calls `guardrails.check_input()`, which first makes a **specific greeting-only LLM call** (`guardrails/guards.py:_is_greeting()` — YES/NO, temperature 0) and returns the canned greeting reply on `YES`, then runs NeMo `check_async()` (systematic rails) and `generate_async()` (dialog rails, comparing against `CANNED` replies). Blocked/canned results route to `OUTPUT_GUARD → END`, skipping the router and agents.
+- **Output guard node** (`graph/travel_graph.py:46`, `nodes/nodes.py:output_guard`): calls `guardrails.check_output()` on the final answer; NeMo's `sanitize_output` action withholds output containing credentials, exploit code, private keys, or card/passport data.
+- **Fail-open:** if NeMo or the guard LLM is unavailable, checks return `allowed` with a `nemo_*_fail_open` reason (logged as a warning) so the travel workflow keeps running. Disable entirely with `GUARDRAILS_ENABLED=false`.
 
 Agent responsibilities:
 
@@ -165,6 +220,8 @@ Every agent writes its own state to the `agent_states` table:
 
 Each run gets a `run_id`, and agent results are keyed by `(run_id, agent_name)`. To recover a crashed run, call the API again with the same `run_id`: agents that already completed replay their saved answer from the database instead of calling the LLM and tools again, and only the remaining agents run. `/api/travel` returns the `run_id` it used for exactly this purpose.
 
+In addition, every shared-memory commit is persisted to the **`version_states`** table (`run_id`, `agent_state_id`, `version`, `shared_memory` JSONB) in the background by `Nodes._persist_version()`. This is the database side of the conflict solution: the in-memory optimistic lock rejects stale parallel writes so they cannot overwrite newer research, and the versioned snapshots preserve each accepted state so a conflict, a crash, or a replay can be inspected version-by-version rather than from a single overwritten row.
+
 On startup the app connects to PostgreSQL, creates the table if needed and prints any agent runs that started but never finished (`startup_database()` in `utils/backend_helpers.py`). The same information is exposed by `GET /health`. If PostgreSQL is unreachable, the app still starts, logs the problem and runs with in-memory conversation checkpoints.
 
 ## Project Structure
@@ -177,8 +234,14 @@ On startup the app connects to PostgreSQL, creates the table if needed and print
 ├── router/
 │   └── router.py                # APIRouter: /, /api/travel, /health, /favicon.ico
 ├── utils/
-│   ├── backend_helpers.py       # LLM/DB/Graph setup, startup/shutdown, run_travel_agent
-│   └── background_tasks.py      # Non-blocking DB save scheduling
+│   ├── backend_helpers.py       # LLM/DB/Graph setup, startup/shutdown, run_travel_agent (graph.ainvoke only)
+│   ├── background_tasks.py      # Non-blocking DB save scheduling
+│   └── self_healing.py          # sanitize_agent_result, wrap_untrusted, FIREWALL_INSTRUCTION
+├── guardrails/
+│   ├── config.py                # NeMo Colang + YAML + CANNED replies
+│   ├── rails.py                 # LLMRails setup + guard LLM (get_guard_llm)
+│   ├── guards.py                # check_input/check_output + greeting LLM (_is_greeting)
+│   └── actions.py               # NeMo custom actions: detect_pii_in_input, sanitize_output
 ├── graph/
 │   └── travel_graph.py          # Graph wiring (build_graph)
 ├── state/
@@ -193,7 +256,8 @@ On startup the app connects to PostgreSQL, creates the table if needed and print
 │   └── custom_weather_mcp_server.py # Local weather MCP server
 ├── database/
 │   ├── base_database.py         # BaseDatabase interface
-│   └── postgres_database.py     # PostgreSQL implementation
+│   ├── postgres_database.py     # PostgreSQL implementation (agent_states, version_states)
+│   └── enum_database.py         # AgentStateRecord / VersionStateRecord + table DDL
 ├── agents/
 │   ├── base_agent.py            # BaseAgent interface
 │   ├── intent_router.py         # IntentRouter (structured routing)
@@ -228,6 +292,9 @@ Create a `.env` file in the project root with the following variables:
 ```env
 DATABASE_URL=postgresql://user:password@localhost:5432/travel_db
 GROQ_API_KEY=your_groq_api_key
+GROQ_GUARD_KEY=your_groq_guard_key
+GUARD_MODEL=qwen/qwen3.8-27b
+GUARDRAILS_ENABLED=true
 TAVILY_API_KEY=your_tavily_api_key
 WEATHERAPI_API_KEY=your_weatherapi_api_key
 DEFAULT_ORIGIN_IATA=DAC
@@ -276,13 +343,13 @@ curl -X POST http://127.0.0.1:8000/api/travel \
 
 ## How the Workflow Works
 
-1. The user submits a travel request.
-2. The intent router classifies the request and selects the needed agents.
-3. The flight and hotel agents call the remote Tavily MCP search tools in parallel.
-4. The weather agent calls the custom weather MCP server tools.
-5. Research results are committed to shared memory with optimistic locking (each commit bumps `version`).
+1. The user submits a travel request; the app calls `graph.ainvoke()` — there is no guard check before the graph.
+2. The graph's `input_guard` node runs NeMo Guardrails (`check_input`) plus the dedicated greeting LLM. Blocked/canned inputs (PII, jailbreak, sensitive, off-topic, capabilities, farewell, greeting) return their canned reply and skip to `output_guard → END`.
+3. The intent router classifies the request and selects the needed agents.
+4. The flight and hotel agents call the remote Tavily MCP search tools in parallel; the weather agent calls the custom weather MCP server tools.
+5. Each agent result is self-healed (`sanitize_agent_result`) and committed to shared memory with optimistic locking (each commit bumps `version` and is snapshotted to `version_states` in PostgreSQL).
 6. The itinerary agent reads the shared research data and creates a practical travel plan (no version bump).
-7. The final agent reads the shared-memory snapshot at the current version and formats the answer, which is returned through the web API.
+7. The final agent reads the shared-memory snapshot at the current version, writes a summary covering only the requested intent (instruction fidelity), and the graph's `output_guard` node sanitizes the final answer before it is returned through the web API.
 
 ## Contributing
 
