@@ -11,6 +11,7 @@ from langchain_core.tools import BaseTool
 
 from agents.utils_agents import message_text
 from utils.background_tasks import schedule
+from utils.self_healing import sanitize_agent_result
 from database import AgentStateRecord, BaseDatabase
 from enums import StateKey
 from tools.mcp_tools import mcp_tools
@@ -75,6 +76,9 @@ class BaseAgent(ABC):
             self._fail(run_id, str(error))
             raise
 
+        answer, _findings = sanitize_agent_result(answer, self.name)
+        if _findings:
+            logger.warning("[self-healing] sanitized %s output: %s", self.name, _findings)
         self._complete(run_id, answer)
         logger.info(
             "[%s] DONE run=%s elapsed=%.1fs llm_calls=%s chars=%d -> result returned, DB save queued in background",

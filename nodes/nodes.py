@@ -17,6 +17,7 @@ from agents import (
 from agents.base_agent import AgentState
 from agents.utils_agents import RESEARCH_AGENTS
 from utils.background_tasks import schedule
+from utils.self_healing import sanitize_agent_result
 from database import BaseDatabase
 from enums import AgentName, StateKey
 from state import SharedMemory
@@ -128,6 +129,10 @@ class Nodes:
             result, llm_calls = await agent.run(state)
         except Exception as error:
             result, llm_calls = f"{label} unavailable: {error}", 0
+
+        result, findings = sanitize_agent_result(result, field)
+        if findings:
+            logger.warning("[self-healing] sanitized %s before DB commit: %s", field, findings)
 
         snapshot = await self._commit(state, field, result)
         return result, llm_calls, snapshot
