@@ -149,7 +149,7 @@ class Nodes:
         if result.blocked or result.canned:
             return {
                 "guard_checked": True,
-                "guard_blocked": result.blocked,
+                "guard_blocked": result.blocked or result.canned,
                 "guard_reason": result.reason,
                 StateKey.MESSAGES: [AIMessage(content=result.message)],
             }

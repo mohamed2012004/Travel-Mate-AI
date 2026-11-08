@@ -3,9 +3,25 @@ import logging
 from dataclasses import dataclass
 
 from . import config
-from .rails import get_rails, guard_enabled
+from .rails import get_guard_llm, get_rails, guard_enabled
 
 logger = logging.getLogger(__name__)
+
+BLOCKING_CANNED = {"off_topic", "jailbreak", "sensitive", "capabilities", "farewell"}
+
+GREETING_REPLY = "Hi, I am travel planner. I can plan flights, hotels, weather and itineraries. Where do you want to go?"
+
+async def _is_greeting(text: str) -> bool:
+    llm = get_guard_llm()
+    prompt = (
+        "You are a greeting detector for a travel planner. "
+        "Is the user message ONLY a greeting (for example hello, hi, hey, salam, good morning) "
+        "with NO travel request at all? Answer with exactly one word: YES or NO.\n\n"
+        f"User message: {text}"
+    )
+    response = await llm.ainvoke(prompt)
+    content = getattr(response, "content", response)
+    return str(content).strip().upper().startswith("YES")
 
 @dataclass
 class GuardResult:
@@ -34,6 +50,11 @@ async def check_output(text: str) -> GuardResult:
 async def check_input(text: str) -> GuardResult:
     if not guard_enabled() or not (text or "").strip():
         return GuardResult(True)
+    try:
+        if await _is_greeting(text):
+            return GuardResult(False, True, GREETING_REPLY, "greeting", canned=True)
+    except Exception as error:
+        logger.warning("[guardrails] greeting LLM check failed, fail-open to NeMo rails: %s", error)
     rails = get_rails()
     if rails is None:
         return GuardResult(True, False, "", "nemo_unavailable_fail_open")
@@ -42,9 +63,11 @@ async def check_input(text: str) -> GuardResult:
         if str(systematic.status) == "RailStatus.BLOCKED" or getattr(systematic.status, "value", "") == "blocked":
             rail_name = str(getattr(systematic, "rail", "") or "")
             if rail_name in config.CANNED:
-                return GuardResult(True, False, config.CANNED[rail_name], rail_name, canned=True)
-            blocked_content = systematic.content or config.CANNED.get("pii", "")
-            return GuardResult(False, True, blocked_content, f"pii:{rail_name}", canned=True)
+                blocked = rail_name in BLOCKING_CANNED
+                return GuardResult(not blocked, blocked, systematic.content or config.CANNED[rail_name], rail_name, canned=True)
+            else:
+                blocked_content = systematic.content or config.CANNED.get("pii", "")
+                return GuardResult(False, True, blocked_content, f"pii:{rail_name}", canned=True)
     except Exception as error:
         logger.warning("[guardrails] input systematic rails failed, fail-open: %s", error)
         return GuardResult(True, False, "", "nemo_error_fail_open")
@@ -59,7 +82,7 @@ async def check_input(text: str) -> GuardResult:
             if reason in ("output_sanitized", "pii"):
                 continue
             if content_norm == " ".join(canned.strip().split()):
-                blocked = reason in ("off_topic", "jailbreak", "sensitive")
+                blocked = reason in BLOCKING_CANNED
                 return GuardResult(not blocked, blocked, canned, reason, canned=True)
         return GuardResult(True, False, "", "allowed")
     except Exception as error:

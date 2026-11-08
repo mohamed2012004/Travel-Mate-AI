@@ -3,6 +3,7 @@ import os
 from dotenv import load_dotenv
 load_dotenv()
 from langchain_groq import ChatGroq
+from nemoguardrails import LLMRails, RailsConfig
 
 from . import config
 from .actions import detect_pii_in_input, sanitize_output
@@ -30,7 +31,7 @@ def get_rails():
     if _rails_failed:
         return None
     try:
-        from nemoguardrails import LLMRails, RailsConfig
+        
         rails_config = RailsConfig.from_content(colang_content=config.COLANG, yaml_content=config.YAML)
         rails = LLMRails(rails_config, llm=get_guard_llm())
         rails.register_action(detect_pii_in_input)

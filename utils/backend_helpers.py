@@ -132,30 +132,6 @@ async def run_travel_agent(
         run_id = f"run_{uuid.uuid4().hex}"
     started = time.perf_counter()
     logger.info("[workflow] START run=%s thread=%s query=%r", run_id, thread_id, user_input[:80])
-    try:
-        from guardrails import check_input
-        guard_result = await check_input(user_input)
-    except Exception as error:
-        logger.warning("[guardrails] backend input gate failed, fail-open: %s", error)
-        guard_result = None
-    if guard_result is not None and (guard_result.blocked or guard_result.canned):
-        logger.info("[guardrails] INPUT blocked/canned run=%s reason=%s", run_id, guard_result.reason)
-        return {
-            "thread_id": thread_id,
-            "run_id": run_id,
-            "intent": "blocked" if guard_result.blocked else "general",
-            "intent_decision": {"intent": "blocked" if guard_result.blocked else "general", "agents": []},
-            "answer": guard_result.message,
-            "flight_results": "",
-            "hotel_results": "",
-            "weather_results": "",
-            "itinerary": "",
-            "version": 1,
-            "shared_memory": {},
-            "llm_calls": 0,
-            "guard_blocked": guard_result.blocked,
-            "guard_reason": guard_result.reason,
-        }
     config = {
         "configurable": {
             "thread_id": thread_id
@@ -183,7 +159,7 @@ async def run_travel_agent(
                 "weather": None,
             },
             StateKey.LLM_CALLS: 0,
-            "guard_checked": True,
+            "guard_checked": False,
             "guard_blocked": False,
             "guard_reason": "",
         },
@@ -192,18 +168,6 @@ async def run_travel_agent(
     final_answer = message_text(result[StateKey.MESSAGES][-1])
     guard_blocked = bool(result.get("guard_blocked", False))
     guard_reason = str(result.get("guard_reason", "") or "")
-    if not guard_blocked:
-        try:
-            from guardrails import check_output
-            output_result = await check_output(final_answer)
-        except Exception as error:
-            logger.warning("[guardrails] backend output gate failed, fail-open: %s", error)
-            output_result = None
-        if output_result is not None and output_result.blocked:
-            logger.warning("[guardrails] OUTPUT blocked run=%s reason=%s", run_id, output_result.reason)
-            final_answer = output_result.message
-            guard_blocked = True
-            guard_reason = output_result.reason
     logger.info(
         "[workflow] DONE run=%s elapsed=%.1fs intent=%s llm_calls=%s version=%s answer_chars=%d (DB saves continue in background)",
         run_id, time.perf_counter() - started, result.get(StateKey.INTENT),

@@ -66,32 +66,6 @@ define flow sensitive topic protection
   user ask sensitive topic
   bot refuse sensitive topic
 
-define user express greeting
-  "hello"
-  "hi"
-  "hey"
-  "hello there"
-  "hi there"
-  "hey there"
-  "hii"
-  "heyy"
-  "hola"
-  "good morning"
-  "good afternoon"
-  "good evening"
-  "what's up"
-  "how are you"
-  "salam"
-  "assalamu alaikum"
-  "assalamualaikum"
-
-define bot express greeting
-  "Hi, I am travel planner. I can plan flights, hotels, weather and itineraries. Where do you want to go?"
-
-define flow greeting
-  user express greeting
-  bot express greeting
-
 define user ask capabilities
   "what can you do"
   "what do you know"
@@ -158,7 +132,8 @@ rails:
   input:
     flows:
       - check input for pii
-      - greeting
+      - capabilities
+      - farewell
   output:
     flows:
       - sanitize bot response
@@ -169,7 +144,6 @@ CANNED = {
     "jailbreak": "I maintain consistent guidelines regardless of how I am prompted. I'm here to help with flights, hotels, weather and itineraries. What can I help you plan?",
     "sensitive": "I can't assist with hacking, exploits, fraud, forged documents, or unauthorised access. I'm happy to help with legitimate travel planning \u2014 flights, hotels, weather and itineraries!",
     "pii": "I noticed your message may contain sensitive information (email, phone, passport, card or API key). Please remove any personal or secret data before sending \u2014 I don't store sensitive details!",
-    "greeting": "Hi, I am travel planner. I can plan flights, hotels, weather and itineraries. Where do you want to go?",
     "capabilities": "I'm TripMate AI with expertise in flights, hotels, weather and travel itineraries. Ask me to plan a trip, find flights or hotels, or check the weather!",
     "farewell": "Goodbye! Feel free to return whenever you need help planning a trip. Have a great day!",
     "output_sanitized": "My response may have contained sensitive security details (credentials, exploit code, private keys, card or passport data). For safety, that content has been withheld. Please consult your security team.",
