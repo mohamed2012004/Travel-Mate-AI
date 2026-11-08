@@ -8,6 +8,7 @@ from psycopg_pool import ConnectionPool
 from database.base_database import (
     AgentStateRecord,
     BaseDatabase,
+    RateLimitRecord,
     UserRecord,
     VersionStateRecord,
 )
@@ -15,6 +16,8 @@ from database.enum_database import (
     ADD_AGENT_STATE_ID_SQL,
     CONNECT_TIMEOUT_SECONDS,
     CREATE_AGENT_STATE_ID_INDEX_SQL,
+    CREATE_RATE_LIMIT_TABLE_SQL,
+    CREATE_RATE_LIMIT_USER_INDEX_SQL,
     CREATE_STATUS_INDEX_SQL,
     CREATE_TABLE_SQL,
     CREATE_THREAD_INDEX_SQL,
@@ -25,6 +28,7 @@ from database.enum_database import (
     MAX_ERROR_LENGTH,
 )
 from database.utils_database import (
+    _to_rate_limit_record,
     _to_record,
     _to_user_record,
     _to_version_record,
@@ -234,6 +238,30 @@ class PostgresDatabase(BaseDatabase):
         )
         return _to_user_record(rows[0]) if rows else None
 
+    async def check_and_increment_rate_limit(
+        self, user_id: int, endpoint: str, max_requests: int, window_seconds: int
+    ) -> RateLimitRecord:
+        rows = await asyncio.to_thread(
+            self._fetch_all_sync,
+            """
+            INSERT INTO user_rate_limits (user_id, endpoint, request_count, window_start, updated_at)
+            VALUES (%s, %s, 1, NOW(), NOW())
+            ON CONFLICT (user_id, endpoint) DO UPDATE
+            SET request_count = CASE
+                    WHEN user_rate_limits.window_start <= NOW() - (%s * INTERVAL '1 second') THEN 1
+                    ELSE user_rate_limits.request_count + 1
+                END,
+                window_start = CASE
+                    WHEN user_rate_limits.window_start <= NOW() - (%s * INTERVAL '1 second') THEN NOW()
+                    ELSE user_rate_limits.window_start
+                END,
+                updated_at = NOW()
+            RETURNING id, user_id, endpoint, request_count, window_start, updated_at
+            """,
+            (user_id, endpoint, window_seconds, window_seconds),
+        )
+        return _to_rate_limit_record(rows[0])
+
     def _connect_sync(self) -> None:
         pool = ConnectionPool(
             conninfo=self.database_url,
@@ -264,6 +292,8 @@ class PostgresDatabase(BaseDatabase):
         self._execute_sync(CREATE_VERSION_RUN_INDEX_SQL)
         self._execute_sync(CREATE_VERSION_AGENT_STATE_INDEX_SQL)
         self._execute_sync(CREATE_USERS_TABLE_SQL)
+        self._execute_sync(CREATE_RATE_LIMIT_TABLE_SQL)
+        self._execute_sync(CREATE_RATE_LIMIT_USER_INDEX_SQL)
 
     def _execute_sync(self, sql: str, params: tuple | None = None) -> None:
         pool = self._require_pool()

@@ -36,6 +36,16 @@ class UserRecord:
 
 
 @dataclass
+class RateLimitRecord:
+    user_id: int
+    endpoint: str
+    request_count: int
+    window_start: datetime | None = None
+    updated_at: datetime | None = None
+    id: int | None = None
+
+
+@dataclass
 class VersionStateRecord:
     """One shared-memory version snapshot for a run.
 
@@ -129,3 +139,13 @@ class BaseDatabase(ABC):
     @abstractmethod
     async def get_user_by_email(self, email: str) -> UserRecord | None:
         """Return the user with this email, or None."""
+
+    @abstractmethod
+    async def check_and_increment_rate_limit(
+        self, user_id: int, endpoint: str, max_requests: int, window_seconds: int
+    ) -> RateLimitRecord:
+        """Atomically count one request for this user in the current window.
+
+        Returns the updated counter; caller compares request_count to
+        max_requests to decide whether to allow the request.
+        """

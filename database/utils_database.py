@@ -1,7 +1,12 @@
 import json
 import os
 
-from database.base_database import AgentStateRecord, UserRecord, VersionStateRecord
+from database.base_database import (
+    AgentStateRecord,
+    RateLimitRecord,
+    UserRecord,
+    VersionStateRecord,
+)
 
 
 def get_database_url() -> str:
@@ -58,6 +63,17 @@ def _to_user_record(row: dict) -> UserRecord:
         id=row.get("id"),
         created_at=row.get("created_at"),
         updated_at=row.get("updated_at"),
+    )
+
+
+def _to_rate_limit_record(row: dict) -> RateLimitRecord:
+    return RateLimitRecord(
+        user_id=row["user_id"],
+        endpoint=row["endpoint"],
+        request_count=row["request_count"],
+        window_start=row.get("window_start"),
+        updated_at=row.get("updated_at"),
+        id=row.get("id"),
     )
 
 

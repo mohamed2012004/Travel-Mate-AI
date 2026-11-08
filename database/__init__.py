@@ -1,6 +1,7 @@
 from database.base_database import (
     AgentStateRecord,
     BaseDatabase,
+    RateLimitRecord,
     UserRecord,
     VersionStateRecord,
 )
@@ -15,6 +16,7 @@ __all__ = [
     "BaseDatabase",
     "CONNECT_TIMEOUT_SECONDS",
     "PostgresDatabase",
+    "RateLimitRecord",
     "UserRecord",
     "VersionStateRecord",
     "get_database_url",

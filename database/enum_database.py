@@ -12,6 +12,26 @@ CREATE TABLE IF NOT EXISTS users (
 )
 """
 
+# Per-user fixed-window rate-limit counters. Linked to users(id) so a
+# user can be rate-limited independently; deleting a user deletes its
+# counters. One row per (user_id, endpoint).
+CREATE_RATE_LIMIT_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS user_rate_limits (
+    id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    endpoint TEXT NOT NULL DEFAULT '/api/travel',
+    request_count INTEGER NOT NULL DEFAULT 0,
+    window_start TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE (user_id, endpoint)
+)
+"""
+
+CREATE_RATE_LIMIT_USER_INDEX_SQL = """
+CREATE INDEX IF NOT EXISTS user_rate_limits_user_idx
+ON user_rate_limits (user_id)
+"""
+
 CREATE_TABLE_SQL = """
 CREATE TABLE IF NOT EXISTS agent_states (
     run_id TEXT NOT NULL,
@@ -83,6 +103,8 @@ __all__ = [
     "CONNECT_TIMEOUT_SECONDS",
     "CREATE_AGENT_STATE_ID_INDEX_SQL",
     "CREATE_STATUS_INDEX_SQL",
+    "CREATE_RATE_LIMIT_TABLE_SQL",
+    "CREATE_RATE_LIMIT_USER_INDEX_SQL",
     "CREATE_TABLE_SQL",
     "CREATE_THREAD_INDEX_SQL",
     "CREATE_USERS_TABLE_SQL",
