@@ -24,7 +24,7 @@ all coordinated through a LangGraph workflow with MCP-based tool integrations.
 - 🌐 FastAPI backend with a simple web interface
 - 💾 Conversation state persistence using PostgreSQL
 - ⚡ LLM-powered responses with Groq
-- 🛡️ NeMo Guardrails (Colang) input/output rails in the graph — PII, jailbreak, sensitive-topic, off-topic, capabilities and farewell handling, plus a dedicated greeting-detection LLM call in the guard node
+- 🛡️ NeMo Guardrails (Colang) in a single Guardrails graph node containing greeting (dedicated LLM call), jailbreak, sensitive-topic, off-topic, PII, capabilities and farewell handling, plus output sanitization
 - 🩹 Self-healing sanitization of agent/tool output and an instruction firewall (untrusted user/tool content is DATA only) for instruction fidelity
 - 🔢 Versioned shared memory with optimistic locking — every parallel commit is snapshotted to PostgreSQL `version_states` to solve write conflicts and allow recovery/audit per version
 
@@ -49,11 +49,9 @@ Source design: [`excalidraw_files/design.excalidraw`](excalidraw_files/design.ex
 flowchart LR
     Client["Client"] --> API["POST /api/travel<br/>router/router.py → utils/backend_helpers.py<br/>graph.ainvoke() only"]
     API --> START([START])
-    START --> INGUARD["Input Guard Node<br/>nodes.Nodes.input_guard → guardrails.check_input"]
-    INGUARD --> NEMO["NeMo Guardrails<br/>Colang + YAML<br/>RailsConfig.from_content / LLMRails"]
-    NEMO --> GREETLLM["Greeting LLM (guard node)<br/>guardrails.guards._is_greeting<br/>YES/NO → canned greeting"]
-    GREETLLM -->|blocked / canned| OUTGUARD["Output Guard Node<br/>nodes.Nodes.output_guard → check_output"]
-    GREETLLM -->|allowed| Supervisor["Supervisor / Intent Router<br/>agents/intent_router.py"]
+    START --> GUARD["Guardrails Node<br/>(NeMo Guardrails + greeting LLM)<br/>contains: greeting, jailbreak, sensitive topic,<br/>off-topic, PII, capabilities, farewell,<br/>output sanitization"]
+    GUARD -->|blocked / canned| OUTGUARD["Output Guard Node<br/>nodes.Nodes.output_guard → check_output"]
+    GUARD -->|allowed| Supervisor["Supervisor / Intent Router<br/>agents/intent_router.py"]
 
     Supervisor --> Hotel["Hotel Agent"]
     Supervisor --> Flight["Flight Agent"]
@@ -76,30 +74,13 @@ flowchart LR
     Fidelity -. feedback .-> Client
 ```
 
-How to read it:
-
-| Design element | Implementation |
-| --- | --- |
-| Client → `POST /travel` → graph | Browser UI (`templates/`, `static/`) → FastAPI app (`app.py`) → router (`router/router.py`) → `utils/backend_helpers.py:run_travel_agent()` → `graph.ainvoke()` only (no guard check before the graph) |
-| Input Guard (NeMo) | Graph node `INPUT_GUARD` (`graph/travel_graph.py:19,22`, `nodes/nodes.py:input_guard`) → `guardrails.check_input()` — NeMo Colang rails + dedicated greeting LLM (`guardrails/guards.py:_is_greeting`). Blocked/canned → `OUTPUT_GUARD → END`, skipping router/agents |
-| Greeting LLM (guard node) | `guardrails/guards.py:_is_greeting()` — a specific Groq guard-LLM call (YES/NO, temperature 0) that returns the canned greeting reply; greeting is intentionally **not** a NeMo Colang flow |
-| Supervisor | `IntentRouter` (`agents/intent_router.py`) + `Nodes.route_intent()` — classifies intent and selects only needed agents |
-| Hotel / Flight / Weather Agents | `HotelAgent`, `FlightAgent`, `WeatherAgent` (`agents/`) — run in parallel via LangGraph fan-out |
-| Self-Healing | `utils/self_healing.py:sanitize_agent_result()` in `BaseAgent.run()` and `Nodes._research()` — strips control characters from agent/tool output before it is committed; `FIREWALL_INSTRUCTION` + `wrap_untrusted()` in every prompt (`prompt_catalog/catalog.py`) mark user/tool content as DATA only |
-| Optimistic Locking | `SharedMemory.update_with_retry()` (`state/shared_memory.py`, used in `nodes/nodes.py:_commit`) — stale parallel writes are rejected (`VersionConflictError`) and retried against the latest version instead of overwriting each other |
-| Shared Memory | In-memory `SharedMemory` per `run_id` (`{version, hotel, flight, weather}`), persisted as snapshots |
-| Versioned Episodic Memory | PostgreSQL (`database/postgres_database.py`) — `agent_states` + `version_states`; every commit snapshots `{version, shared_memory}` linked to its `agent_state_id`, so conflicts can be audited/replayed per version and crashed runs replay completed agents by `run_id` |
-| Summarize Agent | `ItineraryAgent` → `FinalAgent` (`agents/`) — builds the itinerary, then the final answer |
-| Instruction Fidelity | `FinalAgent` receives the detected intent and writes a summary covering only the requested topics; the firewall instruction ensures injected instructions inside user/tool delimiters are never followed |
-| Output Guard (NeMo) | Graph node `OUTPUT_GUARD` (`graph/travel_graph.py:46-47`) → `guardrails.check_output()` — `sanitize_output` NeMo action blocks sensitive output (credentials, exploit code, card/passport data) |
-
 ## Agent Architecture
 
 ```mermaid
 flowchart TD
-    START([START]) --> INGUARD["Input Guard<br/>NeMo check_input + greeting LLM"]
-    INGUARD -->|blocked / canned| OUTGUARD["Output Guard<br/>check_output"]
-    INGUARD -->|allowed| Router["Intent Router<br/>route_intent()"]
+    START([START]) --> GUARD["Guardrails Node<br/>NeMo + greeting LLM<br/>greeting, jailbreak, sensitive,<br/>off-topic, PII, capabilities, farewell"]
+    GUARD -->|blocked / canned| OUTGUARD["Output Guard<br/>check_output"]
+    GUARD -->|allowed| Router["Intent Router<br/>route_intent()"]
     OUTGUARD --> END([END])
     Router -->|selected research agents, parallel| Flight["Flight Agent<br/>tavily_search via Tavily MCP"]
     Router --> Hotel["Hotel Agent<br/>tavily_search via Tavily MCP"]
@@ -164,11 +145,11 @@ Parallel research agents all read the shared memory at the same base `version` a
 
 ### NeMo Guardrails (in the Graph)
 
-NeMo Guardrails is used **only inside the graph** — there is no guard check before `graph.ainvoke()` in the app:
+NeMo Guardrails is used **only inside the graph**, as a single **Guardrails node** that contains greeting, jailbreak, sensitive-topic, off-topic, PII, capabilities, farewell and output-sanitization handling — there is no guard check before `graph.ainvoke()` in the app:
 
 - **Setup** (`guardrails/rails.py`): `RailsConfig.from_content(colang_content=config.COLANG, yaml_content=config.YAML)` + `LLMRails(config, llm=get_guard_llm())`, with custom Python actions registered (`detect_pii_in_input`, `sanitize_output` from `guardrails/actions.py`). The guard LLM is a dedicated Groq model (`GROQ_GUARD_KEY` / `GUARD_MODEL`), separate from the main chat LLM.
 - **Colang** (`guardrails/config.py`): flows for off-topic, jailbreak, sensitive topics, capabilities, farewell, a PII input action (`$pii_found = execute detect_pii_in_input`) and a sensitive-output action (`$sensitive_found = execute sanitize_output`). YAML `rails.input.flows` enables `check input for pii`, `capabilities`, `farewell`; `rails.output.flows` enables `sanitize bot response`. Greeting is intentionally **not** a Colang flow.
-- **Input guard node** (`graph/travel_graph.py:22`, `nodes/nodes.py:input_guard`): calls `guardrails.check_input()`, which first makes a **specific greeting-only LLM call** (`guardrails/guards.py:_is_greeting()` — YES/NO, temperature 0) and returns the canned greeting reply on `YES`, then runs NeMo `check_async()` (systematic rails) and `generate_async()` (dialog rails, comparing against `CANNED` replies). Blocked/canned results route to `OUTPUT_GUARD → END`, skipping the router and agents.
+- **Input guard node** (`graph/travel_graph.py:22`, `nodes/nodes.py:input_guard`): calls `guardrails.check_input()`, which first makes a **specific greeting-only LLM call** (`guardrails/guards.py:_is_greeting()` — YES/NO, temperature 0) and returns the canned greeting reply on `YES`, then runs NeMo `check_async()` (systematic rails) and `generate_async()` (dialog rails, comparing against `CANNED` replies). Together — greeting LLM + NeMo Colang rails — they form the single Guardrails node containing greeting, jailbreak, sensitive-topic, off-topic, PII, capabilities and farewell handling. Blocked/canned results route to `OUTPUT_GUARD → END`, skipping the router and agents.
 - **Output guard node** (`graph/travel_graph.py:46`, `nodes/nodes.py:output_guard`): calls `guardrails.check_output()` on the final answer; NeMo's `sanitize_output` action withholds output containing credentials, exploit code, private keys, or card/passport data.
 - **Fail-open:** if NeMo or the guard LLM is unavailable, checks return `allowed` with a `nemo_*_fail_open` reason (logged as a warning) so the travel workflow keeps running. Disable entirely with `GUARDRAILS_ENABLED=false`.
 
@@ -344,7 +325,7 @@ curl -X POST http://127.0.0.1:8000/api/travel \
 ## How the Workflow Works
 
 1. The user submits a travel request; the app calls `graph.ainvoke()` — there is no guard check before the graph.
-2. The graph's `input_guard` node runs NeMo Guardrails (`check_input`) plus the dedicated greeting LLM. Blocked/canned inputs (PII, jailbreak, sensitive, off-topic, capabilities, farewell, greeting) return their canned reply and skip to `output_guard → END`.
+2. The graph's single Guardrails node runs NeMo Guardrails (`check_input`) plus the dedicated greeting LLM — together containing greeting, jailbreak, sensitive-topic, off-topic, PII, capabilities and farewell handling. Blocked/canned inputs return their canned reply and skip to `output_guard → END`.
 3. The intent router classifies the request and selects the needed agents.
 4. The flight and hotel agents call the remote Tavily MCP search tools in parallel; the weather agent calls the custom weather MCP server tools.
 5. Each agent result is self-healed (`sanitize_agent_result`) and committed to shared memory with optimistic locking (each commit bumps `version` and is snapshotted to `version_states` in PostgreSQL).
