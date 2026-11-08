@@ -26,6 +26,16 @@ class AgentStateRecord:
 
 
 @dataclass
+class UserRecord:
+    email: str
+    hashed_password: str
+    is_active: bool = True
+    id: int | None = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
+@dataclass
 class VersionStateRecord:
     """One shared-memory version snapshot for a run.
 
@@ -111,3 +121,11 @@ class BaseDatabase(ABC):
     @abstractmethod
     async def get_version_states(self, run_id: str) -> list[VersionStateRecord]:
         """Return every version snapshot for a run, oldest first."""
+
+    @abstractmethod
+    async def create_user(self, email: str, hashed_password: str) -> UserRecord:
+        """Create a user; raise ValueError if email already exists."""
+
+    @abstractmethod
+    async def get_user_by_email(self, email: str) -> UserRecord | None:
+        """Return the user with this email, or None."""

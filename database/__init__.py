@@ -1,6 +1,7 @@
 from database.base_database import (
     AgentStateRecord,
     BaseDatabase,
+    UserRecord,
     VersionStateRecord,
 )
 from database.enum_database import CONNECT_TIMEOUT_SECONDS
@@ -14,6 +15,7 @@ __all__ = [
     "BaseDatabase",
     "CONNECT_TIMEOUT_SECONDS",
     "PostgresDatabase",
+    "UserRecord",
     "VersionStateRecord",
     "get_database_url",
 ]

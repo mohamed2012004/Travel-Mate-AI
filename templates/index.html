@@ -34,6 +34,21 @@
             </p>
         </section>
 
+        <section class="auth-card" id="authCard">
+            <div id="authLoggedOut">
+                <h2>Sign in</h2>
+                <p>Authenticate with JWT to use the planner. Intent-based routing still decides which agents run.</p>
+                <input type="email" id="authEmail" placeholder="Email">
+                <input type="password" id="authPassword" placeholder="Password (min 8 chars)">
+                <button onclick="authLogin()">Login</button>
+                <button onclick="authRegister()">Register</button>
+            </div>
+            <div id="authLoggedIn" class="hidden">
+                <span id="authUserEmail"></span>
+                <button onclick="authLogout()">Logout</button>
+            </div>
+        </section>
+
         <section class="planner-card">
 
             <div class="card-header">

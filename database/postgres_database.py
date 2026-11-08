@@ -8,6 +8,7 @@ from psycopg_pool import ConnectionPool
 from database.base_database import (
     AgentStateRecord,
     BaseDatabase,
+    UserRecord,
     VersionStateRecord,
 )
 from database.enum_database import (
@@ -17,6 +18,7 @@ from database.enum_database import (
     CREATE_STATUS_INDEX_SQL,
     CREATE_TABLE_SQL,
     CREATE_THREAD_INDEX_SQL,
+    CREATE_USERS_TABLE_SQL,
     CREATE_VERSION_AGENT_STATE_INDEX_SQL,
     CREATE_VERSION_RUN_INDEX_SQL,
     CREATE_VERSION_STATES_TABLE_SQL,
@@ -24,6 +26,7 @@ from database.enum_database import (
 )
 from database.utils_database import (
     _to_record,
+    _to_user_record,
     _to_version_record,
     get_database_url,
 )
@@ -203,6 +206,34 @@ class PostgresDatabase(BaseDatabase):
         )
         return [_to_version_record(row) for row in rows]
 
+    async def create_user(self, email: str, hashed_password: str) -> UserRecord:
+        try:
+            rows = await asyncio.to_thread(
+                self._fetch_all_sync,
+                """
+                INSERT INTO users (email, hashed_password)
+                VALUES (%s, %s)
+                RETURNING id, email, hashed_password, is_active, created_at, updated_at
+                """,
+                (email.lower(), hashed_password),
+            )
+        except Exception as exc:
+            if "unique" in str(exc).lower() or "duplicate" in str(exc).lower():
+                raise ValueError("User with this email already exists") from exc
+            raise
+        return _to_user_record(rows[0])
+
+    async def get_user_by_email(self, email: str) -> UserRecord | None:
+        rows = await asyncio.to_thread(
+            self._fetch_all_sync,
+            """
+            SELECT id, email, hashed_password, is_active, created_at, updated_at
+            FROM users WHERE email = %s
+            """,
+            (email.lower(),),
+        )
+        return _to_user_record(rows[0]) if rows else None
+
     def _connect_sync(self) -> None:
         pool = ConnectionPool(
             conninfo=self.database_url,
@@ -232,6 +263,7 @@ class PostgresDatabase(BaseDatabase):
         self._execute_sync(CREATE_VERSION_STATES_TABLE_SQL)
         self._execute_sync(CREATE_VERSION_RUN_INDEX_SQL)
         self._execute_sync(CREATE_VERSION_AGENT_STATE_INDEX_SQL)
+        self._execute_sync(CREATE_USERS_TABLE_SQL)
 
     def _execute_sync(self, sql: str, params: tuple | None = None) -> None:
         pool = self._require_pool()

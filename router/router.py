@@ -1,11 +1,13 @@
 from pathlib import Path
 import traceback
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Depends, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 
+from database.base_database import UserRecord
+from utils.auth import get_current_user
 from utils.backend_helpers import run_travel_agent
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -30,7 +32,10 @@ async def home(request: Request):
 
 
 @router.post("/api/travel")
-async def travel_planner(request_data: TravelRequest):
+async def travel_planner(
+    request_data: TravelRequest,
+    current_user: UserRecord = Depends(get_current_user),
+):
     try:
         user_message = request_data.message.strip()
         if not user_message:

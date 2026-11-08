@@ -1,6 +1,50 @@
 let currentThreadId = localStorage.getItem("travel_thread_id") || null;
 let latestAnswerMarkdown = "";
 
+function getAuthToken() {
+    return localStorage.getItem("access_token") || "";
+}
+
+function updateAuthUI() {
+    const token = getAuthToken();
+    document.getElementById("authLoggedOut")?.classList.toggle("hidden", !!token);
+    document.getElementById("authLoggedIn")?.classList.toggle("hidden", !token);
+    if (token) document.getElementById("authUserEmail").textContent = "Signed in";
+}
+
+async function authLogin() {
+    return authRequest("/auth/login");
+}
+
+async function authRegister() {
+    return authRequest("/auth/register");
+}
+
+async function authRequest(path) {
+    hideError();
+    const email = document.getElementById("authEmail").value.trim();
+    const password = document.getElementById("authPassword").value;
+    const res = await fetch(path, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email, password }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+        showError(data.detail || "Auth failed");
+        return;
+    }
+    localStorage.setItem("access_token", data.access_token);
+    updateAuthUI();
+}
+
+function authLogout() {
+    localStorage.removeItem("access_token");
+    updateAuthUI();
+}
+
+updateAuthUI();
+
 function setPrompt(text) {
     document.getElementById("userInput").value = text;
 }
@@ -72,11 +116,11 @@ async function sendMessage() {
     setLoading(true);
 
     try {
+        const headers = { "Content-Type": "application/json" };
+        if (getAuthToken()) headers["Authorization"] = `Bearer ${getAuthToken()}`;
         const response = await fetch("/api/travel", {
             method: "POST",
-            headers: {
-                "Content-Type": "application/json"
-            },
+            headers,
             body: JSON.stringify({
                 message: message,
                 thread_id: currentThreadId

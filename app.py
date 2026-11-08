@@ -5,6 +5,7 @@ import uvicorn
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
+from router.auth import router as auth_router
 from router.router import router
 from utils.backend_helpers import shutdown_database, startup_database
 
@@ -31,6 +32,7 @@ app.mount(
     name="static"
 )
 
+app.include_router(auth_router)
 app.include_router(router)
 
 

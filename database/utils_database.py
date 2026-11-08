@@ -1,7 +1,7 @@
 import json
 import os
 
-from database.base_database import AgentStateRecord, VersionStateRecord
+from database.base_database import AgentStateRecord, UserRecord, VersionStateRecord
 
 
 def get_database_url() -> str:
@@ -44,6 +44,17 @@ def _to_version_record(row: dict) -> VersionStateRecord:
         agent_state_id=row["agent_state_id"],
         version=row["version"],
         shared_memory=shared_memory,
+        id=row.get("id"),
+        created_at=row.get("created_at"),
+        updated_at=row.get("updated_at"),
+    )
+
+
+def _to_user_record(row: dict) -> UserRecord:
+    return UserRecord(
+        email=row["email"],
+        hashed_password=row["hashed_password"],
+        is_active=row.get("is_active", True),
         id=row.get("id"),
         created_at=row.get("created_at"),
         updated_at=row.get("updated_at"),

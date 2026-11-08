@@ -109,6 +109,36 @@ body {
     padding: 28px;
 }
 
+.auth-card {
+    background: rgba(15, 23, 42, 0.76);
+    border: 1px solid rgba(148, 163, 184, 0.26);
+    border-radius: 28px;
+    padding: 20px 28px;
+    margin-bottom: 18px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    align-items: center;
+}
+
+.auth-card input {
+    background: rgba(2, 6, 23, 0.64);
+    border: 1px solid rgba(148, 163, 184, 0.24);
+    border-radius: 12px;
+    color: #fff;
+    padding: 10px 14px;
+}
+
+.auth-card button {
+    border-radius: 12px;
+    padding: 10px 16px;
+    cursor: pointer;
+    font-weight: 700;
+    background: linear-gradient(135deg, #2563eb, #7c3aed);
+    color: #fff;
+    border: none;
+}
+
 .card-header,
 .result-header {
     display: flex;
