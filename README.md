@@ -27,6 +27,7 @@ all coordinated through a LangGraph workflow with MCP-based tool integrations.
 - 🛡️ NeMo Guardrails (Colang) in a single Guardrails graph node containing greeting (dedicated LLM call), jailbreak, sensitive-topic, off-topic, PII, capabilities and farewell handling, plus output sanitization
 - 🩹 Self-healing sanitization of agent/tool output and an instruction firewall (untrusted user/tool content is DATA only) for instruction fidelity
 - 🔢 Versioned shared memory with optimistic locking — every parallel commit is snapshotted to PostgreSQL `version_states` to solve write conflicts and allow recovery/audit per version
+- 📊 Monitoring and observability with LangSmith — every LangGraph run, agent, LLM call, and MCP tool call is traced in LangSmith so you can inspect the workflow graph, inputs/outputs, latency, and errors per run
 
 ## Tech Stack
 
@@ -35,6 +36,7 @@ all coordinated through a LangGraph workflow with MCP-based tool integrations.
 - Jinja2 + HTML/CSS/JavaScript frontend
 - LangGraph
 - LangChain
+- LangSmith (monitoring and observability / tracing)
 - Groq LLMs
 - PostgreSQL
 - Tavily API
@@ -223,6 +225,9 @@ GUARDRAILS_ENABLED=true
 TAVILY_API_KEY=your_tavily_api_key
 WEATHERAPI_API_KEY=your_weatherapi_api_key
 DEFAULT_ORIGIN_IATA=DAC
+LANGSMITH_TRACING=true
+LANGSMITH_API_KEY=your_langsmith_api_key
+LANGSMITH_PROJECT=travelmate-ai
 ```
 
 ## Installation
