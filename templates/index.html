@@ -5,7 +5,7 @@
 
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
 
-    <title>TripMate AI</title>
+    <title>TravelMate AI</title>
     <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>✈️</text></svg>">
 
     <link rel="stylesheet" href="/static/style.css?v=4">
@@ -25,22 +25,22 @@
 
         <section class="hero-section">
             <div class="badge">
-                ✈️ TripMate AI — A Multi-Agent Travel Planner with LangGraph & MCP
+                ✈️ TravelMate AI
             </div>
 
             <h1>
-                Plan Your Perfect Trip with AI
+                Plan Your Perfect Trip with TravelMate AI
             </h1>
 
             <p>
-                Search flights, discover hotels, and generate a complete travel itinerary using a multi-agent LangGraph system.
+                Search flights, discover hotels, and generate a complete travel itinerary — all in one place.
             </p>
         </section>
 
         <section class="auth-card" id="authCard">
             <div id="authLoggedOut">
                 <h2>Sign in</h2>
-                <p>Authenticate with JWT to use the planner. Intent-based routing still decides which agents run.</p>
+                <p>Sign in to plan your trip.</p>
                 <input type="email" id="authEmail" placeholder="Email">
                 <input type="password" id="authPassword" placeholder="Password (min 8 chars)">
                 <button onclick="authLogin()">Login</button>
@@ -105,7 +105,6 @@
             <div class="result-header">
                 <div>
                     <h2>Your AI Travel Plan</h2>
-                    <p id="threadInfo">Thread ID: -</p>
                 </div>
 
                 <div class="result-actions">
@@ -129,7 +128,7 @@
     </main>
 
     <footer>
-        Built with FastAPI, LangGraph, Groq, PostgreSQL, Tavily and AviationStack
+        TravelMate AI — plan flights, hotels and itineraries in one place
     </footer>
 
     <!-- Markdown Renderer -->

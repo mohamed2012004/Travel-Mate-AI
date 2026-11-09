@@ -20,8 +20,8 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="TripMate AI",
-    description="LangGraph Multi-Agent Travel Planner with FastAPI Frontend",
+    title="TravelMate AI",
+    description="Plan flights, hotels and itineraries in one place",
     version="1.0.0",
     lifespan=lifespan
 )

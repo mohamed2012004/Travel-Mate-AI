@@ -33,7 +33,7 @@ async function authRequest(path) {
         });
         data = await res.json().catch(() => ({}));
     } catch (error) {
-        showError("Cannot reach server. Is uvicorn running on port 8000? (" + error.message + ")");
+        showError("Cannot reach server. Please try again.");
         return;
     }
     if (!res.ok) {
@@ -89,12 +89,11 @@ function hideError() {
     errorBox.textContent = "";
 }
 
-function showResult(answer, threadId, guardBlocked) {
+function showResult(answer, guardBlocked) {
     latestAnswerMarkdown = answer;
 
     const resultSection = document.getElementById("resultSection");
     const resultBox = document.getElementById("resultBox");
-    const threadInfo = document.getElementById("threadInfo");
     const resultActions = document.querySelector(".result-actions");
 
     if (resultActions) {
@@ -106,8 +105,6 @@ function showResult(answer, threadId, guardBlocked) {
     } else {
         resultBox.innerText = answer;
     }
-
-    threadInfo.textContent = `Thread ID: ${threadId}`;
 
     resultSection.classList.remove("hidden");
 
@@ -147,7 +144,7 @@ async function sendMessage() {
         if (response.status === 401) {
             localStorage.removeItem("access_token");
             updateAuthUI();
-            throw new Error((data.detail || "Session expired. Please log in again.") + " (Guardrails never ran \u2014 auth blocks the request first.)");
+            throw new Error(data.detail || "Session expired. Please log in again.");
         }
 
         if (!response.ok || !data.success) {
@@ -157,7 +154,7 @@ async function sendMessage() {
         currentThreadId = data.thread_id;
         localStorage.setItem("travel_thread_id", currentThreadId);
 
-        showResult(data.answer, data.thread_id, data.guard_blocked);
+        showResult(data.answer, data.guard_blocked);
 
     } catch (error) {
         showError(error.message);

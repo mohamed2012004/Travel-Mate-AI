@@ -455,8 +455,7 @@ footer {
     .planner-card,
     .hero-section,
     footer,
-    .result-actions,
-    #threadInfo {
+    .result-actions {
         display: none;
     }
 

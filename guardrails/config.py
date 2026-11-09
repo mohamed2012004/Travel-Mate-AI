@@ -14,7 +14,7 @@ define user ask off topic
   "help me with my homework"
 
 define bot refuse off topic
-  "I'm TripMate AI, a travel planner for flights, hotels, weather and itineraries. I can't help with that \u2014 but ask me about a trip!"
+  "I'm TravelMate AI, a travel planner for flights, hotels, weather and itineraries. I can't help with that \u2014 but ask me about a trip!"
 
 define flow handle off topic
   user ask off topic
@@ -75,7 +75,7 @@ define user ask capabilities
   "what can I ask you"
 
 define bot explain capabilities
-  "I'm TripMate AI with expertise in flights, hotels, weather and travel itineraries. Ask me to plan a trip, find flights or hotels, or check the weather!"
+  "I'm TravelMate AI with expertise in flights, hotels, weather and travel itineraries. Ask me to plan a trip, find flights or hotels, or check the weather!"
 
 define flow capabilities
   user ask capabilities
@@ -124,7 +124,7 @@ models:
 instructions:
   - type: general
     content: |
-      You are TripMate AI, a travel planner specialising in flights,
+      You are TravelMate AI, a travel planner specialising in flights,
       hotels, weather and itineraries. Only answer travel questions.
       Be professional and concise.
 
@@ -140,11 +140,11 @@ rails:
 """
 
 CANNED = {
-    "off_topic": "I'm TripMate AI, a travel planner for flights, hotels, weather and itineraries. I can't help with that \u2014 but ask me about a trip!",
+    "off_topic": "I'm TravelMate AI, a travel planner for flights, hotels, weather and itineraries. I can't help with that \u2014 but ask me about a trip!",
     "jailbreak": "I maintain consistent guidelines regardless of how I am prompted. I'm here to help with flights, hotels, weather and itineraries. What can I help you plan?",
     "sensitive": "I can't assist with hacking, exploits, fraud, forged documents, or unauthorised access. I'm happy to help with legitimate travel planning \u2014 flights, hotels, weather and itineraries!",
     "pii": "I noticed your message may contain sensitive information (email, phone, passport, card or API key). Please remove any personal or secret data before sending \u2014 I don't store sensitive details!",
-    "capabilities": "I'm TripMate AI with expertise in flights, hotels, weather and travel itineraries. Ask me to plan a trip, find flights or hotels, or check the weather!",
+    "capabilities": "I'm TravelMate AI with expertise in flights, hotels, weather and travel itineraries. Ask me to plan a trip, find flights or hotels, or check the weather!",
     "farewell": "Goodbye! Feel free to return whenever you need help planning a trip. Have a great day!",
     "output_sanitized": "My response may have contained sensitive security details (credentials, exploit code, private keys, card or passport data). For safety, that content has been withheld. Please consult your security team.",
 }
