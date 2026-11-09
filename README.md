@@ -52,30 +52,30 @@ all coordinated through a LangGraph workflow with MCP-based tool integrations.
 ```mermaid
 flowchart TD
     Start([__start__])
-    Start --> Cache{"cache memory"}
-    Cache --> Edge["auth/rate_limiter"]
-    Edge --> InputGuard["input_guard"]
-    InputGuard --> Router["intent_router"]
-    Router --> Flight["flight_agent"]
-    Router --> Hotel["hotel_agent"]
-    Router --> Weather["weather_agent"]
-    Router --> Itinerary["itinerary_agent"]
-    Flight --> Healing["self_healing"]
+    Start --> Edge["Auth & Rate Limiter"]
+    Edge --> Cache{"Episodic Memory Lookup"}
+    Cache --> InputGuard["Input Guard"]
+    InputGuard --> Router["Supervisor"]
+    Router --> Flight["Flight Agent"]
+    Router --> Hotel["Hotel Agent"]
+    Router --> Weather["Weather Agent"]
+    Router --> Itinerary["Itinerary Agent"]
+    Flight --> Healing["Self-Healing"]
     Hotel --> Healing
     Weather --> Healing
-    Healing --> Shared["shared_memory"]
+    Healing --> Shared["Shared Memory"]
     Flight --> Itinerary
     Hotel --> Itinerary
     Weather --> Itinerary
     Shared --> Itinerary
-    Shared -.->|episodic memory| Cache
-    Flight --> Final["final_agent"]
+    Shared -.->|Episodic Memory| Cache
+    Flight --> Final["Final Agent"]
     Hotel --> Final
     Weather --> Final
     Itinerary --> Final
     Shared --> Final
-    Final --> OutputGuard["output_guard"]
-    OutputGuard --> Fidelity([instruction fidelity])
+    Final --> OutputGuard["Output Guard"]
+    OutputGuard --> Fidelity([Instruction Fidelity Check])
     Fidelity -->|yes| End([__end__])
     Fidelity -->|no| Router
     InputGuard -.-> OutputGuard
