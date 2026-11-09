@@ -113,6 +113,24 @@ define flow sanitize bot response
   if $sensitive_found
     bot sanitize sensitive output
     stop
+
+define flow classify input
+  $kind = execute classify_input
+  if $kind == "jailbreak"
+    bot refuse jailbreak
+    stop
+  if $kind == "off_topic"
+    bot refuse off topic
+    stop
+  if $kind == "sensitive"
+    bot refuse sensitive topic
+    stop
+  if $kind == "capabilities"
+    bot explain capabilities
+    stop
+  if $kind == "farewell"
+    bot express farewell
+    stop
 """
 
 YAML = """
@@ -132,8 +150,7 @@ rails:
   input:
     flows:
       - check input for pii
-      - capabilities
-      - farewell
+      - classify input
   output:
     flows:
       - sanitize bot response

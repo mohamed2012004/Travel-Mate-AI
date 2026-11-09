@@ -6,7 +6,7 @@ from langchain_groq import ChatGroq
 from nemoguardrails import LLMRails, RailsConfig
 
 from . import config
-from .actions import detect_pii_in_input, sanitize_output
+from .actions import classify_input, detect_pii_in_input, sanitize_output
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +36,7 @@ def get_rails():
         rails = LLMRails(rails_config, llm=get_guard_llm())
         rails.register_action(detect_pii_in_input)
         rails.register_action(sanitize_output)
+        rails.register_action(classify_input)
         _rails = rails
         return rails
     except Exception as error:

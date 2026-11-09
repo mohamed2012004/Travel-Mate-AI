@@ -1,4 +1,3 @@
-import asyncio
 import logging
 from dataclasses import dataclass
 
@@ -10,6 +9,7 @@ logger = logging.getLogger(__name__)
 BLOCKING_CANNED = {"off_topic", "jailbreak", "sensitive", "capabilities", "farewell"}
 
 GREETING_REPLY = "Hi, I am travel planner. I can plan flights, hotels, weather and itineraries. Where do you want to go?"
+
 
 async def _is_greeting(text: str) -> bool:
     llm = get_guard_llm()
@@ -62,29 +62,25 @@ async def check_input(text: str) -> GuardResult:
         systematic = await rails.check_async([{"role": "user", "content": text}])
         if str(systematic.status) == "RailStatus.BLOCKED" or getattr(systematic.status, "value", "") == "blocked":
             rail_name = str(getattr(systematic, "rail", "") or "")
+            if rail_name == "classify input":
+                
+                content = systematic.content or ""
+                reason = next(
+                    (key for key, canned in config.CANNED.items() if canned == content),
+                    "classify_input",
+                )
+                return GuardResult(False, True, content or config.CANNED.get(reason, ""), reason, canned=True)
             if rail_name in config.CANNED:
                 blocked = rail_name in BLOCKING_CANNED
                 return GuardResult(not blocked, blocked, systematic.content or config.CANNED[rail_name], rail_name, canned=True)
+            elif "pii" in rail_name.lower():
+                return GuardResult(False, True, systematic.content or config.CANNED["pii"], "pii", canned=True)
             else:
-                blocked_content = systematic.content or config.CANNED.get("pii", "")
-                return GuardResult(False, True, blocked_content, f"pii:{rail_name}", canned=True)
+                # Unknown rail: do NOT mislabel it as PII. Use NeMo's
+                # own content if it produced any, else a generic block.
+                blocked_content = systematic.content or "I can't help with that request."
+                return GuardResult(False, True, blocked_content, f"blocked:{rail_name}", canned=True)
     except Exception as error:
         logger.warning("[guardrails] input systematic rails failed, fail-open: %s", error)
         return GuardResult(True, False, "", "nemo_error_fail_open")
-    try:
-        if hasattr(rails, "generate_async"):
-            response = await rails.generate_async(messages=[{"role": "user", "content": text}])
-        else:
-            response = await asyncio.to_thread(rails.generate, messages=[{"role": "user", "content": text}])
-        content = response.get("content", str(response)) if isinstance(response, dict) else str(response)
-        content_norm = " ".join(content.strip().replace("\\u2014", "\u2014").split())
-        for reason, canned in config.CANNED.items():
-            if reason in ("output_sanitized", "pii"):
-                continue
-            if content_norm == " ".join(canned.strip().split()):
-                blocked = reason in BLOCKING_CANNED
-                return GuardResult(not blocked, blocked, canned, reason, canned=True)
-        return GuardResult(True, False, "", "allowed")
-    except Exception as error:
-        logger.warning("[guardrails] input check failed, fail-open: %s", error)
-        return GuardResult(True, False, "", "nemo_error_fail_open")
+    return GuardResult(True, False, "", "allowed")
