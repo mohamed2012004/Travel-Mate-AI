@@ -266,16 +266,6 @@ curl -X POST http://127.0.0.1:8000/api/travel \
   -d '{"message":"Plan a 3-day trip to Tokyo with a budget of $1200"}'
 ```
 
-## How the Workflow Works
-
-1. The user submits a travel request; the app calls `graph.ainvoke()` — there is no guard check before the graph.
-2. The graph's single Guardrails node runs NeMo Guardrails (`check_input`) plus the dedicated greeting LLM — together containing greeting, jailbreak, sensitive-topic, off-topic, PII, capabilities and farewell handling. Blocked/canned inputs return their canned reply and skip to `output_guard → END`.
-3. The intent router classifies the request and selects the needed agents.
-4. The flight and hotel agents call the remote Tavily MCP search tools in parallel; the weather agent calls the custom weather MCP server tools.
-5. Each agent result is self-healed (`sanitize_agent_result`) and committed to shared memory with optimistic locking (each commit bumps `version` and is snapshotted to `version_states` in PostgreSQL).
-6. The itinerary agent reads the shared research data and creates a practical travel plan (no version bump).
-7. The final agent reads the shared-memory snapshot at the current version, writes a summary covering only the requested intent (instruction fidelity), and the graph's `output_guard` node sanitizes the final answer before it is returned through the web API.
-
 ## Contributing
 
 Contributions are welcome. If you want to improve the app, add new travel features, or fix issues:
