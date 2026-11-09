@@ -69,7 +69,9 @@ flowchart TD
     Itinerary --> Final
     Shared --> Final
     Final --> OutputGuard["output_guard"]
-    OutputGuard --> End([__end__])
+    OutputGuard --> Fidelity([instruction fidelity])
+    Fidelity -->|yes| End([__end__])
+    Fidelity -->|no| Router
     InputGuard -.-> OutputGuard
 ```
 
