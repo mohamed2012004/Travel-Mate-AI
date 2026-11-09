@@ -46,7 +46,8 @@ all coordinated through a LangGraph workflow with MCP-based tool integrations.
 ```mermaid
 flowchart TD
     Start([__start__])
-    Start --> Edge["auth/rate_limiter"]
+    Start --> Cache{"cache memory"}
+    Cache --> Edge["auth/rate_limiter"]
     Edge --> InputGuard["input_guard"]
     InputGuard --> Router["intent_router"]
     Router --> Flight["flight_agent"]
@@ -61,6 +62,7 @@ flowchart TD
     Hotel --> Itinerary
     Weather --> Itinerary
     Shared --> Itinerary
+    Shared -.->|episodic memory| Cache
     Flight --> Final["final_agent"]
     Hotel --> Final
     Weather --> Final
