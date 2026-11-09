@@ -50,7 +50,7 @@ all coordinated through a LangGraph workflow with MCP-based tool integrations.
 ## System Design
 
 ```mermaid
-flowchart TD
+flowchart LR
     Start([__start__])
     Start --> Edge["Auth & Rate Limiter"]
     Edge --> Cache{"Episodic Memory Lookup"}
