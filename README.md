@@ -43,58 +43,81 @@ all coordinated through a LangGraph workflow with MCP-based tool integrations.
 
 ## System Design
 
-Source design: [`excalidraw_files/design.excalidraw`](excalidraw_files/design.excalidraw) — *TravelMate AI - LangGraph Multi-Agent Travel Planner*.
+The diagram below matches the real graph in `graph/travel_graph.py` (`build_graph()`) and `nodes/nodes.py` (`Nodes`), laid out like a hand-drawn sketch: edge concerns on the left, parallel research in the middle, shared memory on the right.
 
 ```mermaid
 flowchart LR
-    Client["Client"] --> API["POST /api/travel<br/>router/router.py → utils/backend_helpers.py<br/>graph.ainvoke() only"]
-    API --> START([START])
-    START --> GUARD["Guardrails Node<br/>(NeMo Guardrails + greeting LLM)<br/>contains: greeting, jailbreak, sensitive topic,<br/>off-topic, PII, capabilities, farewell,<br/>output sanitization"]
+    Client["Client"] --> API["POST /api/travel<br/>router/router.py<br/>utils/backend_helpers.py: run_travel_agent → graph.ainvoke()"]
+    API --> EDGE["Edge: Auth + Rate Limit<br/>utils/auth.py (JWT) + utils/rate_limit.py<br/>router/auth.py, router/router.py"]
+    EDGE --> START([START])
+    START --> GUARD["Input Guard Node<br/>nodes.Nodes.input_guard → guardrails.check_input<br/>NeMo + greeting LLM: greeting, jailbreak,<br/>sensitive topic, off-topic, PII, capabilities, farewell"]
     GUARD -->|blocked / canned| OUTGUARD["Output Guard Node<br/>nodes.Nodes.output_guard → check_output"]
-    GUARD -->|allowed| Supervisor["Supervisor / Intent Router<br/>agents/intent_router.py"]
+    GUARD -->|allowed| Router["Intent Router (only router, no Supervisor)<br/>agents/intent_router.py + prompt_catalog ROUTER_PROMPT<br/>structured LLM output"]
 
-    Supervisor --> Hotel["Hotel Agent"]
-    Supervisor --> Flight["Flight Agent"]
-    Supervisor --> Weather["Weather Agent"]
+    Router -->|parallel, selected only| Flight["Flight Agent<br/>agents/flight_agent.py"]
+    Router -->|parallel, selected only| Hotel["Hotel Agent<br/>agents/hotel_agent.py"]
+    Router -->|parallel, selected only| Weather["Weather Agent<br/>agents/weather_agent.py"]
 
-    Hotel --> SH["Self-Healing<br/>utils/self_healing.sanitize_agent_result<br/>+ FIREWALL_INSTRUCTION"]
-    Flight --> SH
+    LLM["LLM (shared by Router + all agents)<br/>llm/llm.py: GroqLLM().get_llm() → ChatGroq<br/>llama-3.3-70b, via BaseAgent.create_agent()"]
+    Router --> LLM
+    Flight --> LLM
+    Hotel --> LLM
+    Weather --> LLM
+    Itinerary --> LLM
+    Final --> LLM
+
+    Flight --> MCP["MCP Layer (separate layer, not inside agents)<br/>tools/mcp_tools.py: mcp_tools('tavily') + mcp_tools('weather')<br/>custom_weather_mcp_server.py"]
+    Hotel --> MCP
+    Weather --> MCP
+
+    Flight --> SH["Self-Healing (per agent, before commit)<br/>BaseAgent.run: sanitize_agent_result<br/>+ Nodes._research: sanitize again<br/>+ FIREWALL_INSTRUCTION in prompt_catalog/catalog.py"]
+    Hotel --> SH
     Weather --> SH
-    SH --> Lock["Optimistic Locking<br/>SharedMemory.update_with_retry()"]
-    Lock --> Shared["Shared Memory (in-memory)<br/>state/shared_memory.py<br/>{version, hotel, flight, weather}"]
-    Shared --> VersDB[("PostgreSQL version_states<br/>run_id, agent_state_id, version,<br/>shared_memory snapshot (background)")]
-    Shared --> Episodic["Episodic Memory<br/>PostgreSQL: agent_states, version_states"]
+    SH --> Lock["Optimistic Locking (per research commit, BEFORE Itinerary/Final)<br/>Nodes._commit → SharedMemory.update_with_retry()<br/>state/shared_memory.py — each research agent commits here"]
+    Lock --> Shared["Shared Memory (in-memory, per run_id)<br/>state/shared_memory.py<br/>{version, hotel, flight, weather}"]
 
-    Hotel --> Summarize["Summarize Agent<br/>Itinerary + Final Agent"]
-    Flight --> Summarize
-    Weather --> Summarize
-    Summarize --> OUTGUARD
+    Shared -.->|reads research| Itinerary["Itinerary Agent (separate from Final, no tools)<br/>agents/itinerary_agent.py"]
+    Shared -.->|reads snapshot at current version, READ-ONLY (no write-back)| Final["Final / Summarize Agent<br/>agents/final_agent.py"]
+    Itinerary --> Final
+    Final --> OUTGUARD
     OUTGUARD --> END([END])
-    Summarize --> Fidelity["Instruction Fidelity<br/>final answer covers only requested intent<br/>untrusted content = DATA only"]
-    Fidelity -. feedback .-> Client
+    END --> Client
+
+    Shared -.->|background snapshot per commit| PG[("PostgreSQL (recovery/audit only, not control flow)<br/>database/postgres_database.py: agent_states, version_states<br/>run_id, agent_state_id, version, snapshot")]
+    Fidelity["Instruction Fidelity (constraint, NOT a runtime node, no loop to Client)<br/>FIREWALL_INSTRUCTION + prompt_catalog/catalog.py<br/>+ sanitize_agent_result (utils/self_healing.py)"] -.->|constrains| Flight
 ```
 
 ## Agent Architecture
 
 ```mermaid
 flowchart TD
-    START([START]) --> GUARD["Guardrails Node<br/>NeMo + greeting LLM<br/>greeting, jailbreak, sensitive,<br/>off-topic, PII, capabilities, farewell"]
-    GUARD -->|blocked / canned| OUTGUARD["Output Guard<br/>check_output"]
-    GUARD -->|allowed| Router["Intent Router<br/>route_intent()"]
+    START([START]) --> GUARD["Input Guard<br/>nodes.Nodes.input_guard → guardrails.check_input<br/>NeMo + greeting LLM"]
+    GUARD --> Decision{"Allow / Block?<br/>after_input_guard"}
+    Decision -->|Block / canned| OUTGUARD["Output Guard<br/>nodes.Nodes.output_guard → check_output"]
+    Decision -->|Allow| Router["IntentRouter (Supervisor+Router = one, no separate Supervisor)<br/>agents/intent_router.py<br/>route_intent()"]
     OUTGUARD --> END([END])
-    Router -->|selected research agents, parallel| Flight["Flight Agent<br/>tavily_search via Tavily MCP"]
-    Router --> Hotel["Hotel Agent<br/>tavily_search via Tavily MCP"]
-    Router --> Weather["Weather Agent<br/>custom weather MCP server"]
-    Router -->|itinerary only| Itinerary["Itinerary Agent<br/>no tools"]
-    Router -->|summary only| Final["Final Agent<br/>no tools"]
+    Router -->|selected research agents, parallel| Flight["Flight Agent<br/>agents/flight_agent.py"]
+    Router --> Hotel["Hotel Agent<br/>agents/hotel_agent.py"]
+    Router --> Weather["Weather Agent<br/>agents/weather_agent.py"]
+    Router -->|itinerary only| Itinerary["Itinerary Agent (separate from Final)<br/>agents/itinerary_agent.py, no tools"]
+    Router -->|summary only| Final["Final Agent (Summarize)<br/>agents/final_agent.py, no tools"]
+
+    LLM["LLM (shared)<br/>llm/llm.py Groq ChatGroq"]
+    Router --> LLM
+    Flight --> LLM
+    Hotel --> LLM
+    Weather --> LLM
+    Itinerary --> LLM
+    Final --> LLM
+    Flight --> MCP["MCP Layer (separate, not inside agents)<br/>tools/mcp_tools.py<br/>tavily + weather"]
+    Hotel --> MCP
+    Weather --> MCP
 
     Flight --> SH["Self-Healing<br/>sanitize_agent_result"]
     Hotel --> SH
     Weather --> SH
-    SH --> Commit["Commit<br/>Nodes._commit + optimistic locking"]
+    SH --> Commit["Commit (per research agent, before Itinerary/Final)<br/>Nodes._commit + optimistic locking"]
     Commit --> SM["SharedMemory<br/>version bump per commit"]
-    SM --> VersDB[("PostgreSQL<br/>version_states snapshot<br/>(background, per commit)")]
-    Itinerary -.-> SH
 
     Flight --> After1{"after_research()"}
     Hotel --> After2{"after_research()"}
@@ -107,20 +130,17 @@ flowchart TD
     After3 -->|otherwise| Final
 
     Itinerary --> Final
-    Final --> OUTGUARD2["Output Guard<br/>sanitize_output"]
-    OUTGUARD2 --> END
+    Final --> OUTGUARD
 
-    Flight -.-> SM
-    Hotel -.-> SM
-    Weather -.-> SM
-    Itinerary -.->|reads flight/hotel/weather| SM
-    Final -.->|reads snapshot at current version, writes it back| SM
-    SM -.-> PG[("PostgreSQL<br/>episodic memory")]
+    SM -.->|reads research| Itinerary
+    SM -.->|reads snapshot, READ-ONLY — Final does not write SharedMemory| Final
+    SM -.->|background, per commit| PG[("PostgreSQL (recovery/audit only, not control flow)<br/>agent_states / version_states")]
+    Fidelity2["Instruction Fidelity (constraint, not a node)<br/>FIREWALL_INSTRUCTION + prompt_catalog/<br/>+ sanitize_agent_result"] -.->|constrains| Flight
 ```
 
 ### Self-Healing & Instruction Fidelity
 
-Self-healing (`utils/self_healing.py`) keeps prompt/tool injection and corrupted output from propagating through the workflow:
+Self-healing (`prompt_catalog/util_healing.py`, re-exported via `utils/self_healing.py` / `utils/util_healing.py`) keeps prompt/tool injection and corrupted output from propagating through the workflow:
 
 - **`sanitize_text()` / `sanitize_agent_result()`** — strips control characters (`ord < 32` except `\n`/`\t`) from every agent result. It runs in `BaseAgent.run()` (after each agent) and again in `Nodes._research()` before the result is committed to shared memory, so a bad tool call cannot poison `SharedMemory` or the database snapshots.
 - **`wrap_untrusted(text, tag)`** — wraps user and tool content in `<user_input>`, `<tool_output>`, `<flight_results>`, etc. delimiters and escapes any closing delimiter inside the content, so untrusted text cannot break out of its container.
@@ -195,11 +215,14 @@ On startup the app connects to PostgreSQL, creates the table if needed and print
 ├── pyproject.toml               # Project metadata / dependencies
 ├── requirements.txt             # Python dependencies
 ├── router/
-│   └── router.py                # APIRouter: /, /api/travel, /health, /favicon.ico
+│   ├── router.py                # APIRouter: /, /api/travel, /health, /favicon.ico
+│   ├── auth.py                  # APIRouter: /auth/register, /auth/login, /auth/me
+│   └── auth_schemas.py          # AuthRegister, AuthLogin, Token, UserOut
 ├── utils/
 │   ├── backend_helpers.py       # LLM/DB/Graph setup, startup/shutdown, run_travel_agent (graph.ainvoke only)
 │   ├── background_tasks.py      # Non-blocking DB save scheduling
-│   └── self_healing.py          # sanitize_agent_result, wrap_untrusted, FIREWALL_INSTRUCTION
+│   ├── self_healing.py          # sanitize_agent_result (re-exports FIREWALL_INSTRUCTION)
+│   └── util_healing.py          # re-exports sanitize_text, wrap_untrusted
 ├── guardrails/
 │   ├── config.py                # NeMo Colang + YAML + CANNED replies
 │   ├── rails.py                 # LLMRails setup + guard LLM (get_guard_llm)
@@ -229,10 +252,10 @@ On startup the app connects to PostgreSQL, creates the table if needed and print
 │   ├── weather_agent.py         # WeatherAgent
 │   ├── itinerary_agent.py       # ItineraryAgent
 │   └── final_agent.py           # FinalAgent
-├── llm/                         # LLM factory (Groq)
-├── prompt_catalog/              # Agent prompts
+├── llm/                         # GroqLLM (llm/llm.py): get_llm(), get_llm_reviewer()
+├── prompt_catalog/              # Agent prompts (catalog.py: FIREWALL_INSTRUCTION; util_healing.py: sanitize/wrap)
 ├── excalidraw_files/
-│   └── design.excalidraw        # System design diagram
+│   └── design.excalidraw        # System-design diagram (matches graph/travel_graph.py; see above)
 ├── static/                      # Static frontend assets
 └── templates/                   # HTML templates
 ```
