@@ -43,42 +43,31 @@ all coordinated through a LangGraph workflow with MCP-based tool integrations.
 
 ## System Design
 
-The diagram below matches the real graph in `graph/travel_graph.py` and `nodes/nodes.py`.
-
 ```mermaid
-flowchart LR
-    Fidelity([Instruction Fidelity<br/>constraint only not runtime loop])
-    Client([Client])
-    Client --> Edge["Rate Limit Auth Guard<br/>utils auth and rate limit"]
-    Edge --> Decision{"Input Guard<br/>Allow or Block<br/>after_input_guard"}
-    Decision -->|Allow| Router["IntentRouter<br/>Supervisor and Router are one<br/>agents/intent_router.py"]
-    Decision -->|Block| OutGuard["Output Guard<br/>nodes output_guard"]
-    Router --> Hotel["Hotel Agent"]
-    Router --> Flight["Flight Agent"]
-    Router --> Weather["Weather Agent"]
-    Hotel --> SelfHealing["Self Healing<br/>sanitize_agent_result"]
-    Flight --> SelfHealing
-    Weather --> SelfHealing
-    Flight --> MCP["MCP Layer<br/>tools/mcp_tools.py<br/>tavily and weather"]
-    Hotel --> MCP
-    Weather --> MCP
-    Router --> LLM["Shared LLM<br/>llm/llm.py Groq<br/>BaseAgent create_agent"]
-    Flight --> LLM
-    Hotel --> LLM
-    Weather --> LLM
-    SelfHealing --> Lock{"Optimistic Locking<br/>Nodes._commit<br/>per research agent"}
-    Lock --> Shared([Shared Memory<br/>state/shared_memory.py])
-    Shared -.->|reads| Itinerary["Itinerary Agent<br/>separate from Final<br/>no tools"]
-    Shared -.->|reads only| Final["Final Agent<br/>Summarize<br/>no tools"]
-    Itinerary --> LLM
-    Final --> LLM
+flowchart TD
+    Start([__start__])
+    Start --> InputGuard["input_guard"]
+    InputGuard --> Router["intent_router"]
+    Router --> Flight["flight_agent"]
+    Router --> Hotel["hotel_agent"]
+    Router --> Weather["weather_agent"]
+    Router --> Itinerary["itinerary_agent"]
+    Flight --> Healing["self_healing"]
+    Hotel --> Healing
+    Weather --> Healing
+    Healing --> Shared["shared_memory"]
+    Flight --> Itinerary
+    Hotel --> Itinerary
+    Weather --> Itinerary
+    Shared --> Itinerary
+    Flight --> Final["final_agent"]
+    Hotel --> Final
+    Weather --> Final
     Itinerary --> Final
-    Final --> OutGuard
-    OutGuard --> End([END])
-    End --> Client
-    Shared -.->|audit only| PG["PostgreSQL<br/>agent_states version_states<br/>recovery audit not control flow"]
-    PG -.->|recovery audit only| Decision
-    Fidelity -.->|constrains all agents| SelfHealing
+    Shared --> Final
+    Final --> OutputGuard["output_guard"]
+    OutputGuard --> End([__end__])
+    InputGuard -.-> OutputGuard
 ```
 
 ### Self-Healing & Instruction Fidelity
