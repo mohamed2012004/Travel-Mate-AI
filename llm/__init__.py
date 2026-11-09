@@ -1,6 +1,5 @@
-from llm.llm import LLM, create_llm
+from llm.llm import GroqLLM
 
 __all__ = [
-    "LLM",
-    "create_llm",
+    "GroqLLM",
 ]

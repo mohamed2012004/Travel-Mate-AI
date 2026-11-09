@@ -29,13 +29,13 @@ from utils.background_tasks import drain_background_tasks
 from database import PostgresDatabase, get_database_url
 from enums import CheckpointerBackend, StateKey
 from graph import build_graph
-from llm import create_llm
+from llm import GroqLLM
 from nodes import Nodes
 
 # =========================
 # LLM
 # =========================
-llm = create_llm()
+llm = GroqLLM().get_llm()
 
 # =========================
 # Database

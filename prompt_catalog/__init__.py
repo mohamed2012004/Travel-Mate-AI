@@ -1,4 +1,5 @@
 from prompt_catalog.catalog import (
+    FIREWALL_INSTRUCTION,
     FINAL_AGENT_PROMPT,
     FLIGHT_AGENT_PROMPT,
     HOTEL_AGENT_PROMPT,
@@ -12,6 +13,7 @@ from prompt_catalog.catalog import (
 )
 
 __all__ = [
+    "FIREWALL_INSTRUCTION",
     "ROUTER_PROMPT",
     "FLIGHT_AGENT_PROMPT",
     "HOTEL_AGENT_PROMPT",
