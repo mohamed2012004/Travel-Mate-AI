@@ -46,7 +46,8 @@ all coordinated through a LangGraph workflow with MCP-based tool integrations.
 ```mermaid
 flowchart TD
     Start([__start__])
-    Start --> InputGuard["input_guard"]
+    Start --> Edge["auth/rate_limiter"]
+    Edge --> InputGuard["input_guard"]
     InputGuard --> Router["intent_router"]
     Router --> Flight["flight_agent"]
     Router --> Hotel["hotel_agent"]
