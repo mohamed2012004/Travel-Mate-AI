@@ -2,6 +2,10 @@
 
 An open-source AI travel planner that turns a natural-language trip request into a practical travel plan with flight suggestions, hotel ideas, weather details, and a day-by-day itinerary. The project uses a multi-agent workflow built with LangGraph, LangChain, FastAPI, and MCP tooling.
 
+## 🎬 Project Demo
+
+https://github.com/user-attachments/assets/394ca42f-281a-4f4f-9617-86a79ff11f4a
+
 ## Why this project?
 
 Planning a trip usually means jumping between multiple websites, tools, and spreadsheets. This project brings that flow into one experience by combining:
