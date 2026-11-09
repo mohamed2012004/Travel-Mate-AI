@@ -47,84 +47,38 @@ The diagram below matches the real graph in `graph/travel_graph.py` and `nodes/n
 
 ```mermaid
 flowchart LR
-    Client["Client"] --> API["POST /api/travel<br/>router/router.py<br/>run_travel_agent graph.ainvoke"]
-    API --> EDGE["Edge Auth and Rate Limit<br/>utils/auth.py utils/rate_limit.py"]
-    EDGE --> START([START])
-    START --> GUARD["Input Guard Node<br/>nodes.Nodes.input_guard<br/>guardrails.check_input NeMo"]
-    GUARD -->|blocked| OUTGUARD["Output Guard Node<br/>nodes.Nodes.output_guard check_output"]
-    GUARD -->|allowed| Router["IntentRouter only no Supervisor<br/>agents/intent_router.py"]
-    Router -->|parallel selected only| Flight["Flight Agent<br/>agents/flight_agent.py"]
-    Router -->|parallel selected only| Hotel["Hotel Agent<br/>agents/hotel_agent.py"]
-    Router -->|parallel selected only| Weather["Weather Agent<br/>agents/weather_agent.py"]
-    LLM["Shared LLM<br/>llm/llm.py Groq ChatGroq<br/>via BaseAgent.create_agent"]
-    Router --> LLM
+    Fidelity([Instruction Fidelity<br/>constraint only not runtime loop])
+    Client([Client])
+    Client --> Edge["Rate Limit Auth Guard<br/>utils auth and rate limit"]
+    Edge --> Decision{"Input Guard<br/>Allow or Block<br/>after_input_guard"}
+    Decision -->|Allow| Router["IntentRouter<br/>Supervisor and Router are one<br/>agents/intent_router.py"]
+    Decision -->|Block| OutGuard["Output Guard<br/>nodes output_guard"]
+    Router --> Hotel["Hotel Agent"]
+    Router --> Flight["Flight Agent"]
+    Router --> Weather["Weather Agent"]
+    Hotel --> SelfHealing["Self Healing<br/>sanitize_agent_result"]
+    Flight --> SelfHealing
+    Weather --> SelfHealing
+    Flight --> MCP["MCP Layer<br/>tools/mcp_tools.py<br/>tavily and weather"]
+    Hotel --> MCP
+    Weather --> MCP
+    Router --> LLM["Shared LLM<br/>llm/llm.py Groq<br/>BaseAgent create_agent"]
     Flight --> LLM
     Hotel --> LLM
     Weather --> LLM
+    SelfHealing --> Lock{"Optimistic Locking<br/>Nodes._commit<br/>per research agent"}
+    Lock --> Shared([Shared Memory<br/>state/shared_memory.py])
+    Shared -.->|reads| Itinerary["Itinerary Agent<br/>separate from Final<br/>no tools"]
+    Shared -.->|reads only| Final["Final Agent<br/>Summarize<br/>no tools"]
     Itinerary --> LLM
     Final --> LLM
-    Flight --> MCP["MCP Layer separate not inside agents<br/>tools/mcp_tools.py<br/>tavily and weather"]
-    Hotel --> MCP
-    Weather --> MCP
-    Flight --> SH["Self-Healing per agent before commit<br/>sanitize_agent_result<br/>FIREWALL_INSTRUCTION"]
-    Hotel --> SH
-    Weather --> SH
-    SH --> Lock["Optimistic Locking per research commit<br/>Nodes._commit SharedMemory.update_with_retry<br/>before Itinerary and Final read"]
-    Lock --> Shared["Shared Memory in memory per run_id<br/>state/shared_memory.py<br/>version flight hotel weather"]
-    Shared -.->|reads research| Itinerary["Itinerary Agent separate from Final no tools<br/>agents/itinerary_agent.py"]
-    Shared -.->|reads snapshot read only no write back| Final["Final Summarize Agent<br/>agents/final_agent.py"]
     Itinerary --> Final
-    Final --> OUTGUARD
-    OUTGUARD --> END([END])
-    END --> Client
-    Shared -.->|background snapshot per commit| PG["PostgreSQL recovery audit only not control flow<br/>database/postgres_database.py<br/>agent_states version_states"]
-    Fidelity["Instruction Fidelity constraint not a runtime node<br/>FIREWALL_INSTRUCTION prompt_catalog<br/>sanitize_agent_result"] -.->|constrains| Flight
-```
-
-## Agent Architecture
-
-```mermaid
-flowchart TD
-    START([START]) --> GUARD["Input Guard<br/>nodes.Nodes.input_guard<br/>guardrails.check_input NeMo"]
-    GUARD --> Decision{"Allow or Block<br/>after_input_guard"}
-    Decision -->|Block| OUTGUARD["Output Guard<br/>nodes.Nodes.output_guard<br/>check_output"]
-    Decision -->|Allow| Router["IntentRouter one component<br/>agents/intent_router.py<br/>route_intent"]
-    OUTGUARD --> END([END])
-    Router -->|selected agents parallel| Flight["Flight Agent<br/>agents/flight_agent.py"]
-    Router --> Hotel["Hotel Agent<br/>agents/hotel_agent.py"]
-    Router --> Weather["Weather Agent<br/>agents/weather_agent.py"]
-    Router -->|itinerary only| Itinerary["Itinerary Agent separate from Final<br/>agents/itinerary_agent.py no tools"]
-    Router -->|summary only| Final["Final Agent Summarize<br/>agents/final_agent.py no tools"]
-    LLM["Shared LLM<br/>llm/llm.py Groq ChatGroq"]
-    Router --> LLM
-    Flight --> LLM
-    Hotel --> LLM
-    Weather --> LLM
-    Itinerary --> LLM
-    Final --> LLM
-    Flight --> MCP["MCP Layer separate not inside agents<br/>tools/mcp_tools.py<br/>tavily and weather"]
-    Hotel --> MCP
-    Weather --> MCP
-    Flight --> SH["Self-Healing<br/>sanitize_agent_result"]
-    Hotel --> SH
-    Weather --> SH
-    SH --> Commit["Commit per research agent<br/>before Itinerary and Final<br/>Nodes._commit optimistic locking"]
-    Commit --> SM["SharedMemory<br/>version bump per commit"]
-    Flight --> After1{"after_research"}
-    Hotel --> After2{"after_research"}
-    Weather --> After3{"after_research"}
-    After1 -->|itinerary requested| Itinerary
-    After2 -->|itinerary requested| Itinerary
-    After3 -->|itinerary requested| Itinerary
-    After1 -->|otherwise| Final
-    After2 -->|otherwise| Final
-    After3 -->|otherwise| Final
-    Itinerary --> Final
-    Final --> OUTGUARD
-    SM -.->|reads research| Itinerary
-    SM -.->|reads snapshot read only| Final
-    SM -.->|background per commit| PG["PostgreSQL recovery audit only<br/>agent_states version_states"]
-    Fidelity2["Instruction Fidelity constraint not a node<br/>FIREWALL_INSTRUCTION prompt_catalog<br/>sanitize_agent_result"] -.->|constrains| Flight
+    Final --> OutGuard
+    OutGuard --> End([END])
+    End --> Client
+    Shared -.->|audit only| PG["PostgreSQL<br/>agent_states version_states<br/>recovery audit not control flow"]
+    PG -.->|recovery audit only| Decision
+    Fidelity -.->|constrains all agents| SelfHealing
 ```
 
 ### Self-Healing & Instruction Fidelity
